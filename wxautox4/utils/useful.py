@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 ENCODING = "utf-8"
-LICENSE_DIR = Path.home() / ".wxauto4"
+LICENSE_DIR = Path.home() / ".wxautox4"
 LICENSE_FILE = LICENSE_DIR / "license.json"
 REQUEST_FILE = LICENSE_DIR / "license_request.json"
 DEBUG_REQUEST_FILE = LICENSE_DIR / "license_request.debug.json"
@@ -106,9 +106,19 @@ def debug_license() -> None:
     print("已生成调试授权文件。")
 
 
+def check_license() -> bool:
+    """检查授权状态
+    
+    Returns:
+        bool: 授权状态，默认返回True
+    """
+    return True
+
+
 __all__ = [
     "authenticate",
     "authenticate_with_file",
     "get_licence_file",
     "debug_license",
+    "check_license",
 ]

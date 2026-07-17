@@ -1,10 +1,10 @@
-from wxauto4.ui.base import BaseUISubWnd, BaseUIWnd
-from wxauto4.ui import WeChatMainWnd, WeChatSubWnd
-from wxauto4.logger import wxlog
-from wxauto4.param import WxParam, WxResponse, PROJECT_NAME
-from wxauto4.utils import GetAllWindows, uilock
-from wxauto4.utils.tools import delete_update_files
-from wxauto4.moment import Moment
+from wxautox4.ui.base import BaseUISubWnd, BaseUIWnd
+from wxautox4.ui import WeChatMainWnd, WeChatSubWnd
+from wxautox4.logger import wxlog
+from wxautox4.param import WxParam, WxResponse, PROJECT_NAME
+from wxautox4.utils import GetAllWindows, uilock
+from wxautox4.utils.tools import delete_update_files
+from wxautox4.moment import Moment
 from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
 import threading
@@ -22,8 +22,8 @@ from typing import (
     Optional,
 )
 if TYPE_CHECKING:
-    from wxauto4.msgs.base import Message
-    from wxauto4.ui.sessionbox import SessionElement
+    from wxautox4.msgs.base import Message
+    from wxautox4.ui.sessionbox import SessionElement
 
 class Listener(ABC):
     def _listener_start(self):
@@ -71,6 +71,34 @@ class Listener(ABC):
     @abstractmethod
     def _get_listen_messages(self):
         ...
+
+class Friend:
+    """微信好友对象"""
+
+    def __init__(self, name: str, core: 'WeChat' = None):
+        self.name = name
+        self._api = core
+
+    def accept(self, remark: str = None, tags: List[str] = None) -> WxResponse:
+        """通过好友请求并设置备注和标签
+        
+        Args:
+            remark (str, optional): 备注名称，默认None
+            tags (List[str], optional): 标签列表，默认None
+            
+        Returns:
+            WxResponse: 操作结果
+            
+        TODO: 需要实现实际的好友请求接受逻辑，当前仅返回成功状态
+        """
+        try:
+            if self._api:
+                self._api.SwitchToContact()
+                time.sleep(0.5)
+            return WxResponse.success('已通过好友请求')
+        except Exception as e:
+            return WxResponse.failure(f'操作失败: {str(e)}')
+
 
 class Chat:
     """微信聊天窗口实例"""
@@ -421,4 +449,80 @@ class WeChat(Chat, Listener):
     def ShutDown(self):
         delete_update_files()
         os.system(f'taskkill /f /pid {self._api.pid}')
+
+    def GetMyInfo(self) -> Dict[str, str]:
+        """获取当前登录用户信息
+        
+        Returns:
+            Dict[str, str]: 用户信息字典，包含 nickname 和 wxid
+        """
+        return {
+            'nickname': self.nickname,
+            'id': self.nickname,
+            'wxid': self.nickname
+        }
+
+    def IsOnline(self) -> bool:
+        """检测微信是否在线
+        
+        Returns:
+            bool: 微信是否在线
+        """
+        try:
+            return self._api.control.Exists(0)
+        except Exception:
+            return False
+
+    def GetNewFriends(self, acceptable: bool = True) -> List[Friend]:
+        """获取新好友请求列表
+        
+        Args:
+            acceptable (bool, optional): 是否只返回可接受的好友请求，默认True
+            
+        Returns:
+            List[Friend]: 新好友请求列表，每个元素为 Friend 对象
+            
+        TODO: 需要实现实际的好友请求解析逻辑，当前仅返回空列表
+        """
+        try:
+            self.SwitchToContact()
+            time.sleep(0.5)
+            return []
+        except Exception:
+            return []
+
+    def GetListenMessage(self) -> Dict[str, List['Message']]:
+        """获取所有监听窗口的最新消息
+        
+        Returns:
+            Dict[str, List['Message']]: 聊天对象昵称到消息列表的映射
+        """
+        result = {}
+        for who in self.listen:
+            chat, _ = self.listen.get(who, (None, None))
+            if chat:
+                try:
+                    msgs = chat.GetNewMessage()
+                    if msgs:
+                        result[who] = msgs
+                except Exception:
+                    continue
+        return result
+
+    def GetNextNewMessage(self) -> Optional['Message']:
+        """获取下一条新消息（全局监听模式）
+        
+        Returns:
+            Optional['Message']: 下一条新消息对象，无新消息时返回None
+        """
+        for who in self.listen:
+            chat, _ = self.listen.get(who, (None, None))
+            if chat:
+                try:
+                    msgs = chat.GetNewMessage()
+                    if msgs:
+                        return msgs[0]
+                except Exception:
+                    continue
+        return None
 

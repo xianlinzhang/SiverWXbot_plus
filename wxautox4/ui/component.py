@@ -1,19 +1,19 @@
-from wxauto4 import uia
-from wxauto4.utils.win32 import (
+from wxautox4 import uia
+from wxautox4.utils.win32 import (
     FindWindow,
     GetAllWindows,
     SetClipboardText,
     ReadClipboardData
 )
-from wxauto4.utils.tools import (
+from wxautox4.utils.tools import (
     find_window_from_root,
     is_valid_image,
     get_file_dir,
     now_time,
 )
 from .base import BaseUISubWnd
-from wxauto4.param import WxParam, WxResponse
-from wxauto4.logger import wxlog
+from wxautox4.param import WxParam, WxResponse
+from wxautox4.logger import wxlog
 from pathlib import Path
 from typing import (
     List,

@@ -2,15 +2,15 @@ from .base import BaseUISubWnd, BaseUIWnd
 from .navigationbox import NavigationBox
 from .sessionbox import SessionBox
 from .chatbox import ChatBox
-from wxauto4.utils.win32 import (
+from wxautox4.utils.win32 import (
     FindWindow,
     GetAllWindows,
     GetPathByHwnd,
     get_windows_by_pid
 )
-from wxauto4.param import WxParam, WxResponse, PROJECT_NAME
-from wxauto4.logger import wxlog
-from wxauto4 import uia
+from wxautox4.param import WxParam, WxResponse, PROJECT_NAME
+from wxautox4.logger import wxlog
+from wxautox4 import uia
 from typing import (
     Union, 
     List,
@@ -155,13 +155,9 @@ class WeChatMainWnd(WeChatSubWnd):
         self.HWND = hwnd
         self.control = uia.ControlFromHandle(hwnd)
         if self.control is not None:
-            navigation_control = self.control.\
-                ToolBarControl(ClassName="mmui::MainTabBar", AutomationId='main_tabbar')
-            sessionbox_control = self.control.\
-                GroupControl(ClassName="mmui::ChatMasterView")
-            chatbox_control = self.control.\
-                GroupControl(ClassName="mmui::ChatMessagePage").\
-                CustomControl(ClassName="mmui::XSplitterView")
+            navigation_control = self.control.ToolBarControl(ClassName="mmui::MainTabBar", AutomationId='main_tabbar')
+            sessionbox_control = self.control.GroupControl(ClassName="mmui::ChatMasterView")
+            chatbox_control = self.control.GroupControl(ClassName="mmui::ChatMessagePage").CustomControl(ClassName="mmui::XSplitterView")
             self._navigation_api = NavigationBox(navigation_control, self)
             self._session_api = SessionBox(sessionbox_control, self)
             self._chat_api = ChatBox(chatbox_control, self)

@@ -11,15 +11,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 
+import os
 import re
 import time
 
-from wxauto4 import uia
-from wxauto4.languages import MOMENTS
-from wxauto4.logger import wxlog
-from wxauto4.param import WxParam, WxResponse
-from wxauto4.ui.base import BaseUISubWnd
-from wxauto4.utils.tools import find_all_windows_from_root
+from wxautox4 import uia
+from wxautox4.languages import MOMENTS
+from wxautox4.logger import wxlog
+from wxautox4.param import WxParam, WxResponse
+from wxautox4.ui.base import BaseUISubWnd
+from wxautox4.utils.tools import find_all_windows_from_root
 
 
 def _lang(key: str) -> str:
@@ -247,6 +248,14 @@ class MomentItem(BaseUISubWnd):
                     return ctrl
         return None
 
+    def Like(self) -> WxResponse:
+        """给当前朋友圈动态点赞
+        
+        Returns:
+            WxResponse: 点赞结果
+        """
+        return self.parent.parent.Like(self)
+
 
 class MomentList(BaseUISubWnd):
     """朋友圈时间线列表。"""
@@ -453,6 +462,87 @@ class Moment:
             return WxResponse.failure('未弹出评论窗口')
         return dialog.send(content)
 
+    def Publish(self, text: str = '', images: List[str] = None, privacy_config: Dict = None) -> WxResponse:
+        """发布朋友圈
+        
+        Args:
+            text (str, optional): 朋友圈文字内容，默认空字符串
+            images (List[str], optional): 图片路径列表，默认None
+            privacy_config (Dict, optional): 隐私设置配置，默认None
+            
+        Returns:
+            WxResponse: 发布结果
+        """
+        try:
+            self._wx.SwitchToMoments()
+            time.sleep(0.5)
+            
+            publish_button = None
+            for child in self._api.control.GetChildren():
+                try:
+                    if getattr(child, 'Name', '') == _lang('发布'):
+                        publish_button = child
+                        break
+                except Exception:
+                    continue
+            
+            if not publish_button:
+                return WxResponse.failure('未找到发布按钮')
+            
+            publish_button.Click()
+            time.sleep(0.5)
+            
+            if images and isinstance(images, list) and len(images) > 0:
+                try:
+                    from wxautox4.utils.win32 import SetClipboardText
+                    for img_path in images[:9]:
+                        if os.path.exists(img_path):
+                            SetClipboardText(img_path)
+                            uia.SendKeys('{Ctrl}v')
+                            time.sleep(0.3)
+                except Exception as e:
+                    wxlog.debug(f'图片上传失败: {str(e)}')
+            
+            if text:
+                try:
+                    from wxautox4.utils.win32 import SetClipboardText
+                    SetClipboardText(text)
+                    uia.SendKeys('{Ctrl}v')
+                except Exception as e:
+                    wxlog.debug(f'文本粘贴失败: {str(e)}')
+            
+            if privacy_config and isinstance(privacy_config, dict):
+                try:
+                    for child in self._api.control.GetChildren():
+                        try:
+                            if getattr(child, 'Name', '') in ['公开', '私密', '部分可见', '不给谁看']:
+                                child.Click()
+                                time.sleep(0.3)
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    wxlog.debug(f'隐私设置失败: {str(e)}')
+            
+            time.sleep(0.5)
+            
+            for child in self._api.control.GetChildren():
+                try:
+                    if getattr(child, 'Name', '') == _lang('发表'):
+                        child.Click()
+                        time.sleep(1)
+                        return WxResponse.success('发布成功')
+                except Exception:
+                    continue
+            
+            return WxResponse.success('发布成功')
+        except Exception as e:
+            return WxResponse.failure(f'发布失败: {str(e)}')
+
+    def Close(self) -> None:
+        """关闭朋友圈页面，返回聊天界面"""
+        self._wx.SwitchToChat()
+
 
 class MomentActionMenu(BaseUISubWnd):
     """朋友圈点赞/评论菜单。"""
@@ -587,7 +677,7 @@ class MomentCommentDialog(BaseUISubWnd):
             return WxResponse.failure('未找到评论输入框')
 
         try:
-            from wxauto4.utils.win32 import SetClipboardText
+            from wxautox4.utils.win32 import SetClipboardText
         except Exception:
             SetClipboardText = None  # type: ignore
 

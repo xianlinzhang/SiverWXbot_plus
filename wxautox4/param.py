@@ -1,7 +1,7 @@
 from typing import Literal
 import os
 
-PROJECT_NAME = 'wxauto4'
+PROJECT_NAME = 'wxautox4'
 
 class WxParam:
     # 语言设置
@@ -22,6 +22,9 @@ class WxParam:
 
     # 是否强制重新自动获取X偏移量，如果设置为True，则每次启动都会重新获取
     FORCE_MESSAGE_XBIAS: bool = False
+
+    # 聊天窗口大小配置
+    CHAT_WINDOW_SIZE: tuple = (1500, 6000)
 
     # 监听消息时间间隔，单位秒
     LISTEN_INTERVAL: int = 1

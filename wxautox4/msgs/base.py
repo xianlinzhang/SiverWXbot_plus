@@ -1,10 +1,11 @@
-from wxauto4 import uia
-from wxauto4.ui.component import (
+import os
+from wxautox4 import uia
+from wxautox4.ui.component import (
     Menu,
     SelectContactWnd
 )
-from wxauto4.utils import uilock
-from wxauto4.param import WxParam, WxResponse, PROJECT_NAME
+from wxautox4.utils import uilock
+from wxautox4.param import WxParam, WxResponse, PROJECT_NAME
 from abc import ABC, abstractmethod
 from typing import (
     Dict,
@@ -18,7 +19,7 @@ from typing import (
 from hashlib import md5
 
 if TYPE_CHECKING:
-    from wxauto4.ui.chatbox import ChatBox
+    from wxautox4.ui.chatbox import ChatBox
 
 def truncate_string(s: str, n: int=8) -> str:
     s = s.replace('\n', '').strip()
@@ -273,3 +274,71 @@ class HumanMessage(BaseMessage, ABC):
             self.parent.input_at(at)
 
         return self.parent.send_text(text)
+
+    @uilock
+    def download(self, timeout: int = 5) -> str:
+        """下载消息中的图片
+        
+        Args:
+            timeout (int, optional): 超时时间，单位为秒，默认5秒
+
+        Returns:
+            str: 下载文件的本地路径，下载失败返回None
+        """
+        if not self.exists():
+            return None
+        options = ['保存图片', '保存']
+        success = False
+        for option in options:
+            if self.select_option(option, timeout=timeout):
+                success = True
+                break
+        if not success:
+            return None
+        import time
+        start_time = time.time()
+        save_path = WxParam.DEFAULT_SAVE_PATH
+        os.makedirs(save_path, exist_ok=True)
+        initial_files = set(os.listdir(save_path))
+        while time.time() - start_time < timeout:
+            current_files = set(os.listdir(save_path))
+            new_files = current_files - initial_files
+            if new_files:
+                latest_file = max(new_files, key=lambda x: os.path.getmtime(os.path.join(save_path, x)))
+                return os.path.join(save_path, latest_file)
+            time.sleep(0.5)
+        return None
+
+    @uilock
+    def download_quote_image(self, timeout: int = 5) -> str:
+        """下载引用消息中的图片
+        
+        Args:
+            timeout (int, optional): 超时时间，单位为秒，默认5秒
+
+        Returns:
+            str: 下载文件的本地路径，下载失败返回None
+        """
+        return self.download(timeout)
+
+    @uilock
+    def to_text(self, timeout: int = 5) -> str:
+        """将语音消息转换为文字
+        
+        Args:
+            timeout (int, optional): 超时时间，单位为秒，默认5秒
+
+        Returns:
+            str: 语音转文字的结果，转换失败返回None
+        """
+        if not self.exists():
+            return None
+        if not self.select_option('转文字', timeout=timeout):
+            return None
+        import time
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if self.control.Name and not self.control.Name.startswith('语音'):
+                return self.control.Name
+            time.sleep(0.5)
+        return None

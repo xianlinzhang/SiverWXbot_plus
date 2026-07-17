@@ -1,7 +1,7 @@
-from wxauto4 import uia
-from wxauto4.param import PROJECT_NAME
-from wxauto4.logger import wxlog
-from wxauto4.utils.lock import uilock
+from wxautox4 import uia
+from wxautox4.param import PROJECT_NAME
+from wxautox4.logger import wxlog
+from wxautox4.utils.lock import uilock
 from abc import ABC, abstractmethod
 import win32gui
 from typing import Union

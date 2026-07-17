@@ -38,3 +38,4 @@ tests/
 *.log
 *.png
 
+/.idea/

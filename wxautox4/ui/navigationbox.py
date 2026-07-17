@@ -1,5 +1,5 @@
-from wxauto4 import uia
-from wxauto4.param import (
+from wxautox4 import uia
+from wxautox4.param import (
     WxParam, 
     WxResponse,
 )

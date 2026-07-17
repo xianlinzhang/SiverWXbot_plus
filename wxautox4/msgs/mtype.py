@@ -2,8 +2,8 @@ from .base import (
     BaseMessage, 
     HumanMessage,
 )
-from wxauto4 import uia
-from wxauto4.param import (
+from wxautox4 import uia
+from wxautox4.param import (
     WxParam, 
     WxResponse, 
     PROJECT_NAME
@@ -17,7 +17,7 @@ from typing import (
 )
 import re
 if TYPE_CHECKING:
-    from wxauto4.ui.chatbox import ChatBox
+    from wxautox4.ui.chatbox import ChatBox
 
 
 class TextMessage(BaseMessage):

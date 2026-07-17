@@ -9,7 +9,7 @@ import time
 
 from PIL import Image
 
-from wxauto4.uia import uiautomation as uia
+from wxautox4.uia import uiautomation as uia
 
 from .win32 import GetAllWindows
 

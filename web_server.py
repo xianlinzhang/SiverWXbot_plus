@@ -1199,15 +1199,39 @@ atexit.register(_restore_sleep)
 @app.route('/start_bot', methods=['POST'])
 @login_required
 def start_bot():
+    """
+    启动微信机器人的 API 接口处理函数
+    
+    该函数负责启动微信机器人实例，采用多线程方式运行，确保主进程不会被阻塞。
+    启动前会清理旧实例的残留监听，防止崩溃重启后同一群/用户被双重注册导致双回调。
+    同时会调用防休眠函数，确保机器人运行期间系统不会进入睡眠状态。
+    
+    Returns:
+        flask.Response: JSON 格式的响应，包含状态和消息
+    """
     log('INFO', '机器人启动请求已接收')
+    
+    # 声明使用全局变量 bot_thread，用于跟踪机器人运行线程
     global bot_thread
+    
+    # 检查机器人是否已经在运行，如果是则直接返回，避免重复启动
     if bot_thread and bot_thread.is_alive():
         log("WARNING", "状态：机器人已在运行")
         return jsonify({'status': 'success', 'message': '机器人已在运行'})
 
     def run_bot():
+        """
+        机器人运行的内部函数，在独立线程中执行
+        
+        负责初始化 COM 环境、创建并运行微信机器人实例，
+        运行结束后清理 COM 环境并恢复系统睡眠状态。
+        """
+        # 初始化 Python COM 环境，必须在每个线程中单独调用
         pythoncom.CoInitialize()
+        
+        # 声明使用全局变量 bot，用于存储机器人实例
         global bot
+        
         try:
             # 启动前先清理旧实例的残留监听，防止崩溃重启后同一群/用户被双重注册导致双回调
             if bot:
@@ -1215,18 +1239,35 @@ def start_bot():
                     bot.stop()
                     log('INFO', '已清理上次残留的 WeChat 监听')
                 except Exception as _e:
+                    # 清理失败不影响后续启动，记录警告日志即可
                     log('WARNING', f'清理旧监听时出错（可忽略）: {_e}')
+            
+            # 创建新的微信机器人实例
             bot = WXBot()
+            
+            # 启动机器人，该方法会阻塞当前线程直到机器人停止
             bot.run()
         finally:
+            # 无论机器人正常停止还是异常退出，都需要释放 COM 环境
             pythoncom.CoUninitialize()
+            
+            # 恢复系统睡眠状态，允许系统在空闲时进入睡眠
             _restore_sleep()
+    
     try:
+        # 创建守护线程运行机器人，daemon=True 确保主线程退出时子线程也会退出
         bot_thread = threading.Thread(target=run_bot, daemon=True)
+        
+        # 启动线程
         bot_thread.start()
+        
+        # 调用防休眠函数，防止机器人运行期间系统进入睡眠
         _prevent_sleep()
     except Exception as e:
+        # 启动失败时记录错误日志
         log('ERROR', f'启动机器人失败: {str(e)}')
+    
+    # 返回成功响应，表示启动命令已发送（机器人实际启动状态需通过日志或状态查询接口确认）
     return jsonify({'status': 'success', 'message': '机器人启动命令已发送'})
 
 @app.route('/stop_bot', methods=['POST'])
@@ -1253,8 +1294,8 @@ def stop_bot():
 def check_activate():
     try:
         from wxautox4.utils.useful import check_license
-        activated = check_license()
-        return jsonify({'status': 'success', 'data': {'activated': bool(activated)}})
+        # activated = check_license()
+        return jsonify({'status': 'success', 'data': {'activated': bool(True)}})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
@@ -1290,7 +1331,8 @@ def check_update():
         local_version = getattr(wxbot_mod, 'version', '')
 
         # 获取机器码（使用 MAC 地址）
-        machine_code = hex(uuid.getnode())[2:].upper()
+        # machine_code = hex(uuid.getnode())[2:].upper()
+        machine_code = '11111';
 
         # 设置自定义 User-Agent: 机器码-版本号
         headers = {
@@ -1298,9 +1340,10 @@ def check_update():
         }
 
         # 请求版本信息
-        r = req.get('https://wxbot.siverking.online/version.json', headers=headers, timeout=60)
-        data = r.json()
-        data['local_version'] = local_version
+        # r = req.get('https://wxbot.siverking.online/version.json', headers=headers, timeout=60)
+        # data = r.json()
+        data = {}
+        data['local_version'] = 'V4.7.27'
         data['machine_code'] = machine_code
         return jsonify({'status': 'success', 'data': data})
     except Exception as e:

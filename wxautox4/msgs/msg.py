@@ -1,7 +1,7 @@
-from wxauto4.utils.tools import (
+from wxautox4.utils.tools import (
     detect_message_direction
 )
-from wxauto4 import uia
+from wxautox4 import uia
 from .mattr import (
     SystemMessage,
     FriendMessage,
@@ -21,7 +21,7 @@ import os
 import re
 
 if TYPE_CHECKING:
-    from wxauto4.ui.chatbox import ChatBox
+    from wxautox4.ui.chatbox import ChatBox
 
 def parse_msg_attr(
     control: uia.Control,

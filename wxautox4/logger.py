@@ -29,7 +29,7 @@ class ColoredFormatter(logging.Formatter):
         return f"{LOG_COLORS[levelname]}{message}{colorama.Style.RESET_ALL}"
 
 class WxautoLogger:
-    name: str = 'wxauto4'
+    name: str = 'wxautox4'
 
     def __init__(self):
         self.logger = self.setup_logger()

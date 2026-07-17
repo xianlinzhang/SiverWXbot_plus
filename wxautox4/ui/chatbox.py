@@ -1,21 +1,21 @@
-from wxauto4 import uia
-from wxauto4.param import (
+from wxautox4 import uia
+from wxautox4.param import (
     WxParam, 
     WxResponse,
 )
-from wxauto4.utils.win32 import (
+from wxautox4.utils.win32 import (
     SetClipboardFiles,
     SetClipboardData,
     SetClipboardText
 )
-from wxauto4.ui.component import (
+from wxautox4.ui.component import (
     Menu
 )
-from wxauto4.logger import wxlog
+from wxautox4.logger import wxlog
 from .base import (
     BaseUISubWnd
 )
-from wxauto4.msgs.msg import parse_msg
+from wxautox4.msgs.msg import parse_msg
 
 import time
 import os

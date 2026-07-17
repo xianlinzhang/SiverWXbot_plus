@@ -13,7 +13,7 @@ import pyperclip
 import psutil
 import ctypes
 from PIL import Image
-from wxauto4 import uia
+from wxautox4 import uia
 
 def GetAllWindows(name=None, classname=None):
     """
