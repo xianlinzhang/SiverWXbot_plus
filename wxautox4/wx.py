@@ -4,6 +4,11 @@ from wxautox4.logger import wxlog
 from wxautox4.param import WxParam, WxResponse, PROJECT_NAME
 from wxautox4.utils import GetAllWindows, uilock
 from wxautox4.utils.tools import delete_update_files
+from wxautox4.utils.human import (
+    human_sleep,
+    human_click,
+    human_noise_action,
+)
 from wxautox4.moment import Moment
 from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
@@ -36,6 +41,12 @@ class Listener(ABC):
         self._listener_thread.start()
 
     def _listener_listen(self):
+        """
+        监听消息循环，支持拟人化噪声行为
+        
+        在监听过程中随机执行微小的鼠标移动或滚动操作，模拟用户空闲时的行为，
+        降低被检测为自动化程序的风险。
+        """
         self._excutor = ThreadPoolExecutor(max_workers=WxParam.LISTENER_EXCUTOR_WORKERS)
         if not hasattr(self, 'listen') or not self.listen:
             self.listen = {}
@@ -49,7 +60,12 @@ class Listener(ABC):
                 break
             except:
                 wxlog.debug(f'监听消息失败：{traceback.format_exc()}')
-            time.sleep(WxParam.LISTEN_INTERVAL)
+            
+            if WxParam.ENABLE_HUMANIZATION:
+                human_noise_action(WxParam.NOISE_ACTION_PROBABILITY)
+                human_sleep(WxParam.LISTEN_INTERVAL_MIN, WxParam.LISTEN_INTERVAL_MAX)
+            else:
+                time.sleep(WxParam.LISTEN_INTERVAL_MIN)
 
     def _safe_callback(
             self, 
@@ -94,7 +110,10 @@ class Friend:
         try:
             if self._api:
                 self._api.SwitchToContact()
-                time.sleep(0.5)
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(0.3, 0.8)
+                else:
+                    time.sleep(0.5)
             return WxResponse.success('已通过好友请求')
         except Exception as e:
             return WxResponse.failure(f'操作失败: {str(e)}')
@@ -280,10 +299,13 @@ class WeChat(Chat, Listener):
         return self._api._get_wx_dir()
 
     def KeepRunning(self):
-        """保持运行"""
+        """保持运行，支持拟人化延迟"""
         while not self._listener_stop_event.is_set():
             try:
-                time.sleep(1)
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(0.8, 1.5)
+                else:
+                    time.sleep(1)
             except KeyboardInterrupt:
                 wxlog.debug(f'wxauto4("{self.nickname}") shutdown')
                 self.StopListening(True)
@@ -403,47 +425,75 @@ class WeChat(Chat, Listener):
         return WxResponse.success()
 
     def SwitchToChat(self) -> None:
-        """切换到聊天页面"""
-        self._api._navigation_api.chat_icon.Click()
+        """切换到聊天页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_click(self._api._navigation_api.chat_icon,
+                       min_delay=WxParam.CLICK_DELAY_MIN,
+                       max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            self._api._navigation_api.chat_icon.Click()
 
     def SwitchToContact(self) -> None:
-        """切换到联系人页面"""
-        self._api._navigation_api.contact_icon.Click()
+        """切换到联系人页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_click(self._api._navigation_api.contact_icon,
+                       min_delay=WxParam.CLICK_DELAY_MIN,
+                       max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            self._api._navigation_api.contact_icon.Click()
 
     def SwitchToFavorites(self) -> None:
-        """切换到收藏页面"""
+        """切换到收藏页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_favorites_page()
 
     def SwitchToFiles(self) -> None:
-        """切换到聊天文件页面"""
+        """切换到聊天文件页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_files_page()
 
     def SwitchToMoments(self) -> None:
-        """切换到朋友圈页面"""
+        """切换到朋友圈页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_moments_page()
 
     def SwitchToBrowser(self) -> None:
-        """切换到搜一搜页面"""
+        """切换到搜一搜页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_browser_page()
 
     def SwitchToVideo(self) -> None:
-        """切换到视频号页面"""
+        """切换到视频号页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_video_page()
 
     def SwitchToStories(self) -> None:
-        """切换到看一看页面"""
+        """切换到看一看页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_stories_page()
 
     def SwitchToMiniProgram(self) -> None:
-        """切换到小程序面板页面"""
+        """切换到小程序面板页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_mini_program_page()
 
     def SwitchToPhone(self) -> None:
-        """切换到手机页面"""
+        """切换到手机页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_phone_page()
 
     def SwitchToSettings(self) -> None:
-        """切换到更多设置页面"""
+        """切换到更多设置页面，支持拟人化操作"""
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_settings_page()
 
     def ShutDown(self):
@@ -486,7 +536,10 @@ class WeChat(Chat, Listener):
         """
         try:
             self.SwitchToContact()
-            time.sleep(0.5)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(0.3, 0.8)
+            else:
+                time.sleep(0.5)
             return []
         except Exception:
             return []

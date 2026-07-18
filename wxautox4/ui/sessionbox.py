@@ -8,6 +8,11 @@ from wxautox4.languages import MENU_OPTIONS
 from wxautox4.ui.component import Menu
 from wxautox4.utils.tools import wxlog_debug_control
 from wxautox4.utils.win32 import SetClipboardText
+from wxautox4.utils.human import (
+    human_sleep,
+    human_click,
+    human_dbl_click,
+)
 from wxautox4.logger import wxlog
 import time
 from typing import (
@@ -80,22 +85,43 @@ class SessionBox:
             force: bool = False,
             force_wait: Union[float, int] = 0.5
         ):
-
+        """
+        搜索聊天会话，支持拟人化输入延迟
+        
+        Args:
+            keywords: 搜索关键词
+            force: 是否强制重新搜索
+            force_wait: 强制搜索时等待时间
+            
+        Returns:
+            List[SearchResultElement]: 搜索结果列表
+        """
         wxlog.debug(f"开始search")
-        self.control.SendKeys('{Ctrl}f', waitTime=1)
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(0.1, 0.3)
+        
+        self.control.SendKeys('{Ctrl}f', waitTime=0)
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(0.2, 0.5)
 
-        time.sleep(force_wait)
-
-        self.searchbox.SendKeys(keywords, waitTime=1.5)
-
-        time.sleep(force_wait)
+        if WxParam.ENABLE_HUMANIZATION:
+            for char in keywords:
+                self.searchbox.SendKeys(char, waitTime=0)
+                human_sleep(WxParam.SEARCH_KEY_INTERVAL_MIN, WxParam.SEARCH_KEY_INTERVAL_MAX)
+            human_sleep(0.3, 0.8)
+        else:
+            self.searchbox.SendKeys(keywords, waitTime=1.5)
+            time.sleep(force_wait)
 
         search_result = self.get_search_content().ListControl()
 
         if force:
-            time.sleep(force_wait)
-            # self.searchbox.SendKeys('{ENTER}')
-            # return ''
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(0.5, 1.0)
+            else:
+                time.sleep(force_wait)
 
         return [SearchResultElement(i) for i in search_result.GetChildren()]
     
@@ -128,6 +154,9 @@ class SessionBox:
         # 执行搜索操作，在搜索框中输入关键词
         search_result = self.search(keywords, force, force_wait)
         
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.SEARCH_CLICK_DELAY_MIN, WxParam.SEARCH_CLICK_DELAY_MAX)
+        
         # 记录搜索开始时间，用于超时判断
         t0 = time.time()
         
@@ -149,43 +178,87 @@ class SessionBox:
                     # 精确匹配模式
                     # 1. 首先尝试完全匹配
                     if text == keywords:
-                        search_result_item.Click()
+                        if WxParam.ENABLE_HUMANIZATION:
+                            human_click(search_result_item.control,
+                                       min_delay=WxParam.CLICK_DELAY_MIN,
+                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                        else:
+                            search_result_item.Click()
                         return keywords
                     # 2. 尝试按微信号字段匹配（格式如"昵称 微信号: xxx"）
                     elif (
                         ' 微信号: ' in text
                         and (split:=text.split(' 微信号: '))[-1].lower() == keywords.lower()
                     ):
-                        search_result_item.Click()
+                        if WxParam.ENABLE_HUMANIZATION:
+                            human_click(search_result_item.control,
+                                       min_delay=WxParam.CLICK_DELAY_MIN,
+                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                        else:
+                            search_result_item.Click()
                         return split[0]  # 返回实际昵称
                     # 3. 尝试按昵称字段匹配（格式如"备注名 昵称: xxx"）
                     elif (
                         ' 昵称: ' in text
                         and (split:=text.split(' 昵称: '))[-1].lower() == keywords.lower()
                     ):
-                        search_result_item.Click()
+                        if WxParam.ENABLE_HUMANIZATION:
+                            human_click(search_result_item.control,
+                                       min_delay=WxParam.CLICK_DELAY_MIN,
+                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                        else:
+                            search_result_item.Click()
                         return split[0]  # 返回实际备注名
                 else:
                     # 模糊匹配模式，只要关键词在文本中出现就匹配
                     if keywords in text:
-                        search_result_item.Click()
+                        if WxParam.ENABLE_HUMANIZATION:
+                            human_click(search_result_item.control,
+                                       min_delay=WxParam.CLICK_DELAY_MIN,
+                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                        else:
+                            search_result_item.Click()
                         return text
                     
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(0.1, 0.3)
+        
         # 搜索超时仍未找到匹配项，取消搜索状态
         if self.search_content.Exists(0):
             self.control.MiddleClick()
 
     def open_separate_window(self, name: str):
+        """
+        在独立窗口中打开会话，支持拟人化操作延迟
+        
+        Args:
+            name: 会话名称
+            
+        Returns:
+            WxResponse: 操作结果
+        """
         wxlog.debug(f"打开独立窗口: {name}")
         realname = self.switch_chat(name)
         if not realname:
             return WxResponse.failure('未找到会话')
-        time.sleep(0.3)
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(0.3, 0.8)
+        else:
+            time.sleep(0.3)
+            
         while True:
             session = [i for i in self.get_session() if uia.IsElementInWindow(self.session_list, i.control)][0]
             if session.content.startswith(realname):
                 break
-        session.double_click()
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_dbl_click(session.control,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            session.double_click()
+            
         return WxResponse.success(data={'nickname': realname})
 
 
@@ -262,13 +335,33 @@ class SessionElement:
 
     # @uilock
     def _click(self, right: bool=False, double: bool=False):
+        """
+        点击会话元素，支持拟人化操作
+        
+        Args:
+            right: 是否右键点击
+            double: 是否双击
+        """
         self.roll_into_view()
-        if right:
-            self.control.RightClick()
-        elif double:
-            self.control.DoubleClick()
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            if right:
+                self.control.RightClick(simulateMove=True)
+            elif double:
+                human_dbl_click(self.control,
+                               min_delay=WxParam.CLICK_DELAY_MIN,
+                               max_delay=WxParam.CLICK_DELAY_MAX)
+            else:
+                human_click(self.control,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
         else:
-            self.control.Click()
+            if right:
+                self.control.RightClick()
+            elif double:
+                self.control.DoubleClick()
+            else:
+                self.control.Click()
 
     def click(self):
         self._click()
@@ -277,13 +370,28 @@ class SessionElement:
         self._click(right=True)
 
     def double_click(self):
-        self._click()
         self._click(double=True)
 
     def select_option(self, option: str, wait=0.3):
+        """
+        选择右键菜单项，支持拟人化操作延迟
+        
+        Args:
+            option: 菜单项名称
+            wait: 等待菜单出现的时间
+            
+        Returns:
+            WxResponse: 操作结果
+        """
         self.roll_into_view()
-        self.control.RightClick()
-        time.sleep(wait)
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            self.control.RightClick(simulateMove=True)
+            human_sleep(0.2, 0.5)
+        else:
+            self.control.RightClick()
+            time.sleep(wait)
+            
         menu = Menu(self.parent)
         return menu.select(option)
 
@@ -341,8 +449,20 @@ class SearchResultElement:
         ]
     
     def click(self):
+        """
+        点击搜索结果，支持拟人化操作
+        
+        使用平滑鼠标移动和随机点击位置
+        """
         uia.RollIntoView(self.control.GetParentControl(), self.control)
-        self.control.Click()
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_click(self.control,
+                       min_delay=WxParam.CLICK_DELAY_MIN,
+                       max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            self.control.Click()
 
     def close(self):
+        """关闭搜索结果"""
         self.control.SendKeys('{Esc}')

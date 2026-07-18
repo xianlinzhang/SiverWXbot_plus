@@ -26,8 +26,12 @@ class WxParam:
     # 聊天窗口大小配置
     CHAT_WINDOW_SIZE: tuple = (1500, 6000)
 
-    # 监听消息时间间隔，单位秒
-    LISTEN_INTERVAL: int = 1
+    # 监听消息时间间隔范围，单位秒（随机取范围内的值）
+    LISTEN_INTERVAL_MIN: float = 0.8
+    LISTEN_INTERVAL_MAX: float = 1.5
+    
+    # 监听消息时间间隔（兼容性属性，返回范围中间值）
+    LISTEN_INTERVAL: float = (LISTEN_INTERVAL_MIN + LISTEN_INTERVAL_MAX) / 2
 
     # 监听执行器线程池大小
     LISTENER_EXCUTOR_WORKERS: int = 4
@@ -40,6 +44,44 @@ class WxParam:
 
     # 发送文件超时时间，单位秒
     SEND_FILE_TIMEOUT: int = 10
+
+    # ========== 拟人化配置 ==========
+
+    # 是否启用拟人化操作（启用后操作更接近人类行为，但会增加少量延迟）
+    ENABLE_HUMANIZATION: bool = True
+
+    # 鼠标移动时间范围（秒）
+    MOUSE_MOVE_MIN: float = 0.2
+    MOUSE_MOVE_MAX: float = 0.8
+
+    # 点击位置最大随机偏移量（像素）
+    CLICK_OFFSET_MAX: int = 15
+
+    # 点击前延迟范围（秒）
+    CLICK_DELAY_MIN: float = 0.1
+    CLICK_DELAY_MAX: float = 0.3
+
+    # 按键间隔范围（秒）- 模拟人类打字速度
+    KEY_INTERVAL_MIN: float = 0.05
+    KEY_INTERVAL_MAX: float = 0.2
+
+    # 短消息阈值（字符）- 小于此值使用逐字输入，否则使用粘贴
+    SHORT_MESSAGE_THRESHOLD: int = 50
+
+    # 搜索关键词输入间隔范围（秒）
+    SEARCH_KEY_INTERVAL_MIN: float = 0.03
+    SEARCH_KEY_INTERVAL_MAX: float = 0.1
+
+    # 搜索结果点击前延迟范围（秒）
+    SEARCH_CLICK_DELAY_MIN: float = 0.2
+    SEARCH_CLICK_DELAY_MAX: float = 0.5
+
+    # 噪声行为执行概率（0.0-1.0）- 在监听循环中随机执行微小动作
+    NOISE_ACTION_PROBABILITY: float = 0.1
+
+    # 粘贴前后延迟范围（秒）
+    PASTE_DELAY_MIN: float = 0.2
+    PASTE_DELAY_MAX: float = 0.5
 
 class WxResponse(dict):
     def __init__(self, status: str, message: str, data: dict = None):

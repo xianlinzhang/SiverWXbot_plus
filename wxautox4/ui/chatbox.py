@@ -8,6 +8,11 @@ from wxautox4.utils.win32 import (
     SetClipboardData,
     SetClipboardText
 )
+from wxautox4.utils.human import (
+    human_sleep,
+    human_type_text,
+    human_click,
+)
 from wxautox4.ui.component import (
     Menu
 )
@@ -20,7 +25,7 @@ from wxautox4.msgs.msg import parse_msg
 import time
 import os
 import re
-from typing import Iterable, Optional, Sequence, Tuple, Union
+from typing import Iterable, Optional, Sequence, Tuple, Union, Literal
 
 def truncate_string(s: str, n: int=8) -> str:
     s = s.replace('\n', '').strip()
@@ -121,38 +126,96 @@ class ChatBox(BaseUISubWnd):
         self.editbox.SendKeys('{DELETE}')
 
 
-    def send_text(self, content: str):
+    def send_text(self, content: str, mode: Literal['paste', 'type'] = None):
+        """
+        发送文本消息，支持粘贴和逐字输入两种模式
+        
+        Args:
+            content: 消息内容
+            mode: 输入模式，'paste'表示剪贴板粘贴，'type'表示逐字输入，
+                  None表示根据消息长度自动选择（短消息用type，长消息用paste）
+                  
+        Returns:
+            WxResponse: 发送结果
+        """
         self._show()
+        
+        if mode is None:
+            if WxParam.ENABLE_HUMANIZATION and len(content) < WxParam.SHORT_MESSAGE_THRESHOLD:
+                mode = 'type'
+            else:
+                mode = 'paste'
+        
         t0 = time.time()
         while True:
             if time.time() - t0 > 10:
                 return WxResponse.failure(f'Timeout --> {self.who} - {content}')
-            SetClipboardText(content)
+            
             self._activate_editbox()
-            self.editbox.SendKeys('{Ctrl}v')
+            
+            if mode == 'type' and WxParam.ENABLE_HUMANIZATION:
+                human_type_text(content, self.editbox,
+                               min_interval=WxParam.KEY_INTERVAL_MIN,
+                               max_interval=WxParam.KEY_INTERVAL_MAX)
+            else:
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+                
+                SetClipboardText(content)
+                
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+                
+                self.editbox.SendKeys('{Ctrl}v')
+            
             if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
                 break
-            self.editbox.SendKeys('{Ctrl}v')
-            if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
-                break
-            self.editbox.RightClick()
-            menu = Menu(self)
-            menu.select('粘贴')
-            if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
-                break
+            
+            if mode == 'paste':
+                self.editbox.SendKeys('{Ctrl}v')
+                if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
+                    break
+                self.editbox.RightClick()
+                menu = Menu(self)
+                menu.select('粘贴')
+                if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
+                    break
+        
         t0 = time.time()
         while self.editbox.GetValuePattern().Value:
             if time.time() - t0 > 10:
                 return WxResponse.failure(f'Timeout --> {self.who} - {content}')
             self._activate_editbox()
 
-            self.sendbtn.Click()
+            if WxParam.ENABLE_HUMANIZATION:
+                human_click(self.sendbtn,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
+            else:
+                self.sendbtn.Click()
+            
             if not self.editbox.GetValuePattern().Value:
                 return WxResponse.success(f"success")
             elif not self.editbox.GetValuePattern().Value.replace('￼', '').strip():
-                return self.send_text(content)
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(0.2, 0.5)
+                return self.send_text(content, mode)
 
-    def send_msg(self, content: str, clear: bool=True, at=None):
+    def send_msg(self, content: str, clear: bool=True, at=None, 
+                 mode: Literal['paste', 'type'] = None):
+        """
+        发送消息，支持粘贴和逐字输入两种模式
+        
+        Args:
+            content: 消息内容
+            clear: 是否清空编辑框
+            at: @对象列表
+            mode: 输入模式，'paste'表示剪贴板粘贴，'type'表示逐字输入，
+                  None表示根据消息长度自动选择
+                  
+        Returns:
+            WxResponse: 发送结果
+        """
         wxlog.debug(f"发送消息: {content}")
         if not content and not at:
             return WxResponse.failure(f"`content` and `at` can't be empty at the same time")
@@ -162,20 +225,43 @@ class ChatBox(BaseUISubWnd):
         if at:
             self.input_at(at)
 
-        return self.send_text(content)
+        return self.send_text(content, mode)
     
     # @uilock
     def send_file(self, file_path):
+        """
+        发送文件，支持随机延迟模拟人类操作
+        
+        Args:
+            file_path: 文件路径或文件路径列表
+            
+        Returns:
+            None
+        """
         wxlog.debug(f"发送文件: {file_path}")
         if isinstance(file_path, str):
             file_path = [file_path]
         file_path = [os.path.abspath(f) for f in file_path]
         
         self.clear_edit()
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
 
         SetClipboardFiles(file_path)
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+        
         self.editbox.SendKeys('{Ctrl}v')
-        self.sendbtn.Click()
+        
+        if WxParam.ENABLE_HUMANIZATION:
+            human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+            human_click(self.sendbtn,
+                       min_delay=WxParam.CLICK_DELAY_MIN,
+                       max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            self.sendbtn.Click()
 
     def input_at(self, at_list):
         if isinstance(at_list, str):
