@@ -238,7 +238,7 @@ class WeChat(Chat, Listener):
         hwnd = None
         if 'hwnd' in kwargs:
             hwnd = kwargs['hwnd']
-        self._api = WeChatMainWnd(nickname, hwnd)
+        self._api:WeChatMainWnd = WeChatMainWnd(nickname, hwnd)
         self.NavigationBox = self._api._navigation_api
         self.SessionBox = self._api._session_api
         self.ChatBox = self._api._chat_api

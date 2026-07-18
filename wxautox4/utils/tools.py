@@ -12,6 +12,8 @@ from PIL import Image
 from wxautox4.uia import uiautomation as uia
 
 from .win32 import GetAllWindows
+from wxautox4.logger import wxlog
+
 
 def get_file_dir(dir_path=None):
     if dir_path is None:
@@ -45,6 +47,50 @@ def find_all_windows_from_root(classname:str=None, name:str=None, pid:int=None, 
     if uiaclsname:
         targets = [w for w in targets if w.ClassName == uiaclsname]
     return targets
+
+def wxlog_debug_control(prefix_text, control):
+    """
+    统一调试control信息
+    
+    Args:
+        prefix_text: 日志前缀文本
+        control: UIA控件对象，可能为None或无效控件
+    
+    Returns:
+        None
+    """
+    if control is None:
+        wxlog.debug(f"{prefix_text}: <None control>")
+        return
+    try:
+        wxlog.debug(f"{prefix_text}: Name='{control.Name}', ClassName='{control.ClassName}', ControlTypeName='{control.ControlTypeName}',NativeWindowHandle='{control.NativeWindowHandle}', AutomationId='{control.AutomationId}', FrameworkId='{control.FrameworkId}', HelpText='{control.HelpText}', LocalizedControlType='{control.LocalizedControlType}'")
+    except Exception as e:
+        wxlog.debug(f"{prefix_text}: <invalid control, error: {e}>")
+
+def wxlog_debug_control_children(control_name, control):
+    """
+    递归调试control的所有子元素信息
+    
+    Args:
+        control_name: 父控件名称
+        control: UIA控件对象，可能为None或无效控件
+    
+    Returns:
+        None
+    """
+    if control is None:
+        wxlog.debug(f"{control_name}的子元素: <None control>")
+        return
+    try:
+        children = control.GetChildren()
+        wxlog.debug(f"{control_name}的子元素数量: {len(children)}")
+
+        # 详细显示每个子元素信息
+        for i, child in enumerate(children):
+            wxlog_debug_control(f"{control_name}的子元素 {i}", child)
+    except Exception as e:
+        wxlog.debug(f"{control_name}的子元素: <invalid control, error: {e}>")
+
 
 def now_time(fmt='%Y%m%d%H%M%S%f'):
     return datetime.now().strftime(fmt)

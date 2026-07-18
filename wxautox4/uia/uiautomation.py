@@ -26,7 +26,7 @@ import comtypes.client
 import win32gui
 import win32ui
 from PIL import Image
-from typing import (Any, Callable, Dict, List, Iterable, Tuple)  # need pip install typing for Python3.4 or lower
+from typing import (Any, Callable, Dict, List, Iterable, Tuple, Literal)  # need pip install typing for Python3.4 or lower
 TreeNode = Any
 
 # print('uia done')
@@ -6274,6 +6274,188 @@ class Control():
             children.append(child)
             child = child.GetNextSiblingControl()
         return children
+
+    def FindControlsByCondition(self, condition: dict,
+                                search_type: Literal['depth', 'breadth'] = 'depth',
+                                max_count: int = 0,
+                                max_depth: int = 0xFFFFFFFF) -> List['Control']:
+        """
+        根据条件查找所有子孙控件。
+
+        Args:
+            condition: dict, 包含要匹配的属性和值
+                      支持的键: Name, ClassName, ControlTypeName, AutomationId, FrameworkId, LocalizedControlType, RegexName, SubName
+                      示例: {'Name': 'example', 'ClassName': 'Button'} 或 {'ControlTypeName': 'ButtonControl', 'RegexName': '.*提交.*'}
+            search_type: str, 搜索方式
+                        'depth' - 深度优先 (默认)
+                        'breadth' - 广度优先
+            max_count: int, 最大返回数量，0表示不限制
+            max_depth: int, 最大搜索深度，默认不限制
+
+        Returns:
+            List[Control]: 匹配条件的所有控件列表
+
+        Example:
+            # 深度优先查找所有Button控件
+            buttons = control.FindControlsByCondition({'ControlTypeName': 'ButtonControl'})
+
+            # 广度优先查找最多5个匹配的元素
+            buttons = control.FindControlsByCondition(
+                {'ClassName': 'mmui::Button'},
+                search_type='breadth',
+                max_count=5
+            )
+
+            # 使用正则匹配名称
+            buttons = control.FindControlsByCondition({'RegexName': '确定|取消'})
+        """
+        valid_keys = {'Name', 'ClassName', 'ControlTypeName', 'AutomationId',
+                      'FrameworkId', 'LocalizedControlType', 'RegexName', 'SubName'}
+
+        # 编译正则表达式
+        regex_name = None
+        if 'RegexName' in condition:
+            import re
+            regex_name = re.compile(condition['RegexName'])
+
+        def match_condition(control: 'Control') -> bool:
+            """检查控件是否匹配条件"""
+            for key, value in condition.items():
+                if key == 'RegexName':
+                    if not regex_name or not regex_name.match(control.Name or ''):
+                        return False
+                elif key == 'SubName':
+                    if not control.Name or value not in control.Name:
+                        return False
+                elif key == 'Name':
+                    if control.Name != value:
+                        return False
+                elif key == 'ClassName':
+                    if control.ClassName != value:
+                        return False
+                elif key == 'ControlTypeName':
+                    if control.ControlTypeName != value:
+                        return False
+                elif key == 'AutomationId':
+                    if control.AutomationId != value:
+                        return False
+                elif key == 'FrameworkId':
+                    if control.FrameworkId != value:
+                        return False
+                elif key == 'LocalizedControlType':
+                    if control.LocalizedControlType != value:
+                        return False
+            return True
+
+        results = []
+
+        if search_type == 'depth':
+            # 深度优先搜索
+            def depth_search(control: 'Control', current_depth: int = 0):
+                if current_depth > max_depth:
+                    return
+                if max_count > 0 and len(results) >= max_count:
+                    return
+
+                if match_condition(control):
+                    results.append(control)
+                    if max_count > 0 and len(results) >= max_count:
+                        return
+
+                children = control.GetChildren()
+                for child in children:
+                    depth_search(child, current_depth + 1)
+                    if max_count > 0 and len(results) >= max_count:
+                        return
+
+            depth_search(self)
+
+        else:
+            # 广度优先搜索
+            from collections import deque
+            queue = deque([(self, 0)])
+
+            while queue:
+                if max_count > 0 and len(results) >= max_count:
+                    break
+
+                control, depth = queue.popleft()
+
+                if depth > max_depth:
+                    continue
+
+                if match_condition(control):
+                    results.append(control)
+                    if max_count > 0 and len(results) >= max_count:
+                        break
+
+                children = control.GetChildren()
+                for child in children:
+                    queue.append((child, depth + 1))
+
+        return results
+
+    def FindControlByCondition(self, condition: dict,
+                               search_type: Literal['depth', 'breadth'] = 'depth',
+                               max_depth: int = 0xFFFFFFFF) -> 'Control':
+        """
+        根据条件查找第一个匹配的子孙控件（找到第一个后立即返回）。
+
+        Args:
+            condition: dict, 包含要匹配的属性和值（与 FindControlsByCondition 相同）
+            search_type: str, 搜索方式
+                        'depth' - 深度优先 (默认)
+                        'breadth' - 广度优先
+            max_depth: int, 最大搜索深度，默认不限制
+
+        Returns:
+            Control: 第一个匹配条件的控件，如果未找到则返回 None
+
+        Example:
+            # 查找第一个Button控件
+            button = control.FindControlByCondition({'ControlTypeName': 'ButtonControl'})
+
+            # 使用正则匹配名称
+            button = control.FindControlByCondition({'RegexName': '确定|取消'})
+        """
+        results = self.FindControlsByCondition(
+            condition,
+            search_type=search_type,
+            max_count=1,
+            max_depth=max_depth
+        )
+        return results[0] if results else None
+
+    def GetAllDescendants(self, max_depth: int = 0xFFFFFFFF) -> List['Control']:
+        """
+        获取所有子孙控件（深度优先遍历）。
+
+        Args:
+            max_depth: int, 最大搜索深度，默认不限制
+
+        Returns:
+            List[Control]: 所有子孙控件列表
+
+        Example:
+            # 获取所有子孙控件
+            all_controls = control.GetAllDescendants()
+
+            # 只获取前3层
+            all_controls = control.GetAllDescendants(max_depth=3)
+        """
+        results = []
+
+        def traverse(control: 'Control', current_depth: int = 0):
+            if current_depth > max_depth:
+                return
+
+            children = control.GetChildren()
+            for child in children:
+                results.append(child)
+                traverse(child, current_depth + 1)
+
+        traverse(self)
+        return results
 
     def _CompareFunction(self, control: 'Control', depth: int) -> bool:
         """

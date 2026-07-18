@@ -20,7 +20,7 @@ from wxautox4.languages import MOMENTS
 from wxautox4.logger import wxlog
 from wxautox4.param import WxParam, WxResponse
 from wxautox4.ui.base import BaseUISubWnd
-from wxautox4.utils.tools import find_all_windows_from_root
+from wxautox4.utils.tools import find_all_windows_from_root, wxlog_debug_control
 
 
 def _lang(key: str) -> str:
@@ -347,6 +347,13 @@ class MomentList(BaseUISubWnd):
 class Moment:
     """朋友圈接口封装。"""
 
+    WindowMomentsControlClassName = 'mmui::SNSWindow'
+
+    # 朋友圈窗口工具条类
+    WindowMomentsControlToolBarClassName: str = 'mmui::SNSWindowToolBar'
+    # 打开发表窗口的按钮类
+    WindowMomentsControlReleaseToolClassName: str = 'mmui::XTabBarItem'
+
     def __init__(self, wx_obj):
         self._wx = wx_obj
         self._api = wx_obj._api
@@ -376,6 +383,18 @@ class Moment:
     # ------------------------------------------------------------------------------------------
     # 对外接口
     # ------------------------------------------------------------------------------------------
+
+    def GetMomentsWindow(self):
+        """获取朋友圈窗口控件
+
+        Returns:
+            uia.WindowControl: 朋友圈窗口控件，如果不存在则返回None
+        """
+        moments_window = uia.WindowControl(ClassName=self.WindowMomentsControlClassName, searchDepth=1)
+        if moments_window.Exists(maxSearchSeconds=0.1):
+            return moments_window
+        else:
+            return None
 
     def GetMoments(self, refresh: bool = False) -> List[MomentItem]:
         """获取朋友圈动态列表。
@@ -477,65 +496,76 @@ class Moment:
             self._wx.SwitchToMoments()
             time.sleep(0.5)
             
-            publish_button = None
-            for child in self._api.control.GetChildren():
-                try:
-                    if getattr(child, 'Name', '') == _lang('发布'):
-                        publish_button = child
-                        break
-                except Exception:
-                    continue
+            MomentsWindow = self.GetMomentsWindow()
+
+            # 朋友圈窗口工具条
+            MomentsToolBar = MomentsWindow.ToolBarControl(ClassName= self.WindowMomentsControlToolBarClassName)
+            # wxlog_debug_control("self.GetMomentsWindow()", self.GetMomentsWindow())
+            # wxlog_debug_control("MomentsToolBar", MomentsToolBar)
+
+            # 打开发表窗口的按钮
+            publish_button = MomentsToolBar.ButtonControl(ClassName=self.WindowMomentsControlReleaseToolClassName, Name=('发表'))
+
+            time.sleep(0.5)
             
             if not publish_button:
                 return WxResponse.failure('未找到发布按钮')
             
-            publish_button.Click()
+            publish_button.Click(simulateMove=False)
             time.sleep(0.5)
             
             if images and isinstance(images, list) and len(images) > 0:
                 try:
                     from wxautox4.utils.win32 import SetClipboardText
+
+                    # 添加图片按钮
+                    PublishImageAddGridButton = MomentsWindow.FindControlByCondition({'Name': '添加图片',  'ClassName': 'mmui::PublishImageAddGridCell'})
                     for img_path in images[:9]:
                         if os.path.exists(img_path):
+                            # 点击添加图片
+                            PublishImageAddGridButton.Click()
                             SetClipboardText(img_path)
                             uia.SendKeys('{Ctrl}v')
                             time.sleep(0.3)
+
+                            # 提交图片
+                            PublishImageSubmitButton = MomentsWindow.FindControlByCondition({'Name': '打开', 'LocalizedControlType': '对话框'}).FindControlByCondition({'Name': '打开(O)', 'LocalizedControlType': '按钮'})
+                            PublishImageSubmitButton.Click()
+
                 except Exception as e:
                     wxlog.debug(f'图片上传失败: {str(e)}')
             
             if text:
                 try:
                     from wxautox4.utils.win32 import SetClipboardText
+
+                    # 输入框
+                    MomentsDialogReplyInput = MomentsWindow.FindControlByCondition({'ClassName': 'mmui::ReplyInputField'})
+
                     SetClipboardText(text)
-                    uia.SendKeys('{Ctrl}v')
+
+                    MomentsDialogReplyInput.SendKeys('{Ctrl}v')
+
+
                 except Exception as e:
                     wxlog.debug(f'文本粘贴失败: {str(e)}')
             
             if privacy_config and isinstance(privacy_config, dict):
-                try:
-                    for child in self._api.control.GetChildren():
-                        try:
-                            if getattr(child, 'Name', '') in ['公开', '私密', '部分可见', '不给谁看']:
-                                child.Click()
-                                time.sleep(0.3)
-                                break
-                        except Exception:
-                            continue
-                except Exception as e:
-                    wxlog.debug(f'隐私设置失败: {str(e)}')
+                wxlog.debug(f'隐私设置待实现')
             
             time.sleep(0.5)
-            
-            for child in self._api.control.GetChildren():
-                try:
-                    if getattr(child, 'Name', '') == _lang('发表'):
-                        child.Click()
-                        time.sleep(1)
-                        return WxResponse.success('发布成功')
-                except Exception:
-                    continue
-            
+
+
+            publishing_button = MomentsWindow.FindControlByCondition({'Name': '发表', 'LocalizedControlType': '按钮', 'ClassName': 'mmui::XOutlineButton'})
+            # wxlog_debug_control("publishing_button", publishing_button)
+
+            publishing_button.Click()
+
+            time.sleep(1)
             return WxResponse.success('发布成功')
+
+
+
         except Exception as e:
             return WxResponse.failure(f'发布失败: {str(e)}')
 

@@ -185,7 +185,7 @@ class WXBotConfig:
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
         self.group_welcome = False      # 群新人欢迎语开关
         self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
-        self.group_welcome_msg = "欢迎新朋友！请先查看群公告！本消息由wxautox发送!"
+        self.group_welcome_msg = "欢迎新朋友！请先查看群公告！本消息自动发送!"
 
         # ---------- 新好友配置 ----------
         self.new_frined_switch = False        # 自动通过新好友开关

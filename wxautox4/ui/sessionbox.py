@@ -6,6 +6,7 @@ from wxautox4.param import (
 )
 from wxautox4.languages import MENU_OPTIONS
 from wxautox4.ui.component import Menu
+from wxautox4.utils.tools import wxlog_debug_control
 from wxautox4.utils.win32 import SetClipboardText
 from wxautox4.logger import wxlog
 import time
@@ -24,11 +25,41 @@ class SessionBox:
         self.init()
 
     def init(self):
+
+        # 两个个布局，搜索输入框和添加群聊(B0)、聊天列表(B1)
+        # _______________
+        # | B0 |
+        # |————|
+        # |    |
+        # | B1 |   <--- 微信会话布局简图示意
+        # |    |
+        # |————|
+        # ———————————————
+
+        # B0搜索输入框
         self.searchbox = self.control.GroupControl(ClassName="mmui::XSearchField").EditControl()
-        self.session_list = self.control.GroupControl(ClassName="mmui::ChatSessionList").\
-            ListControl(ClassName="mmui::XTableView", Name="会话")
-        self.search_content = self.parent.control.WindowControl(ClassName="mmui::SearchContentPopover")
-        
+
+        # B1搜索输入框
+        self.session_list = self.control.GroupControl(ClassName="mmui::ChatSessionList").ListControl(ClassName="mmui::XTableView", Name="会话")
+
+        self.search_content = None
+
+        # wxlog_debug_control('session_list', self.session_list)
+        # self.search_content = self.parent.control.WindowControl(ClassName="mmui::SearchContentPopover")
+        # wxlog_debug_control('search_content', self.search_content)
+
+
+    def get_search_content(self):
+        wxlog.debug(f"开始get_search_content")
+        if self.search_content:
+            return self.search_content
+        else:
+            # self.search_content = self.root.control.FindControlByCondition( {'ClassName': 'mmui::SearchContentPopover'})
+            self.search_content = self.parent.control.WindowControl(ClassName="mmui::SearchContentPopover")
+            wxlog_debug_control('search_content', self.search_content)
+            return self.search_content
+
+
     def roll_up(self, n: int=5):
         self.control.MiddleClick()
         self.control.WheelUp(wheelTimes=n)
@@ -49,13 +80,17 @@ class SessionBox:
             force: bool = False,
             force_wait: Union[float, int] = 0.5
         ):
-        self.searchbox.RightClick()
-        SetClipboardText(keywords)
-        menu = Menu(self)
-        menu.select('粘贴')
-        self.searchbox.MiddleClick()
 
-        search_result = self.search_content.ListControl()
+        wxlog.debug(f"开始search")
+        self.control.SendKeys('{Ctrl}f', waitTime=1)
+
+        time.sleep(force_wait)
+
+        self.searchbox.SendKeys(keywords, waitTime=1.5)
+
+        time.sleep(force_wait)
+
+        search_result = self.get_search_content().ListControl()
 
         if force:
             time.sleep(force_wait)
@@ -71,36 +106,72 @@ class SessionBox:
         force: bool = False,
         force_wait: Union[float, int] = 0.5
     ):
+        """
+        根据关键词切换到指定的聊天窗口
+        
+        通过微信的搜索功能查找聊天会话，支持精确匹配和模糊匹配两种模式，
+        可按昵称、微信号进行匹配。搜索超时后自动取消搜索状态。
+        
+        Args:
+            keywords: 搜索关键词，可以是昵称、微信号或备注名
+            exact: 是否精确匹配，默认为 True，精确匹配时会优先匹配完全一致的文本，
+                   其次尝试按微信号或昵称字段进行匹配
+            force: 是否强制重新搜索，默认为 False，设为 True 时会清除搜索框内容后重新输入
+            force_wait: 强制搜索时等待搜索框清空的时间（秒），默认为 0.5 秒
+        
+        Returns:
+            str: 成功切换时返回实际匹配到的聊天对象名称；未找到时返回 None
+        """
         wxlog.debug(f"切换聊天窗口: {keywords}, {exact}, {force}, {force_wait}")
-        search_box = self.search_content.ListControl()
+
+
+        # 执行搜索操作，在搜索框中输入关键词
         search_result = self.search(keywords, force, force_wait)
+        
+        # 记录搜索开始时间，用于超时判断
         t0 = time.time()
-        while time.time() -t0 < WxParam.SEARCH_CHAT_TIMEOUT:
+        
+        # 循环等待搜索结果出现，直到超时
+        while time.time() - t0 < WxParam.SEARCH_CHAT_TIMEOUT:
+            # 每次循环清空结果列表，重新获取最新的搜索结果
             results = []
-            search_result_items = search_box.GetChildren()
+            search_result_items = self.get_search_content().ListControl().GetChildren()
+            
+            # 遍历所有搜索结果项
             for search_result_item in search_result_items:
+                # 获取搜索结果项的文本内容（通常包含昵称、微信号等信息）
                 text: str = search_result_item.Name
+
+                wxlog.debug(f"关键词: {keywords}, 搜索到 {text}")
+
+                # 根据匹配模式进行处理
                 if exact:
+                    # 精确匹配模式
+                    # 1. 首先尝试完全匹配
                     if text == keywords:
                         search_result_item.Click()
                         return keywords
+                    # 2. 尝试按微信号字段匹配（格式如"昵称 微信号: xxx"）
                     elif (
                         ' 微信号: ' in text
                         and (split:=text.split(' 微信号: '))[-1].lower() == keywords.lower()
                     ):
                         search_result_item.Click()
-                        return split[0]
+                        return split[0]  # 返回实际昵称
+                    # 3. 尝试按昵称字段匹配（格式如"备注名 昵称: xxx"）
                     elif (
                         ' 昵称: ' in text
                         and (split:=text.split(' 昵称: '))[-1].lower() == keywords.lower()
                     ):
                         search_result_item.Click()
-                        return split[0]
+                        return split[0]  # 返回实际备注名
                 else:
+                    # 模糊匹配模式，只要关键词在文本中出现就匹配
                     if keywords in text:
                         search_result_item.Click()
                         return text
                     
+        # 搜索超时仍未找到匹配项，取消搜索状态
         if self.search_content.Exists(0):
             self.control.MiddleClick()
 

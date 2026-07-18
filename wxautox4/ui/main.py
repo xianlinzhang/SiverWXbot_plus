@@ -1,3 +1,5 @@
+import win32gui
+
 from .base import BaseUISubWnd, BaseUIWnd
 from .navigationbox import NavigationBox
 from .sessionbox import SessionBox
@@ -20,6 +22,9 @@ import random
 import os
 import re
 import sys
+
+from wxautox4.utils.tools import wxlog_debug_control
+
 
 class WeChatSubWnd(BaseUISubWnd):
     _ui_cls_name: str = 'mmui::FramelessMainWindow'
@@ -148,16 +153,36 @@ class WeChatMainWnd(WeChatSubWnd):
                     raise Exception(f'未找到微信窗口：{nickname}')
         # if NetErrInfoTipsBarWnd(self):
         #     raise NetWorkError('微信无法连接到网络')
-        
+
+        self._show()
+
         print(f'初始化成功，获取到已登录窗口：{self.nickname}')
 
     def _setup_ui(self, hwnd: int):
         self.HWND = hwnd
-        self.control = uia.ControlFromHandle(hwnd)
+
+        # 整个微信控制页面
+        self.control: uia.WindowControl = uia.ControlFromHandle(hwnd)
         if self.control is not None:
-            navigation_control = self.control.ToolBarControl(ClassName="mmui::MainTabBar", AutomationId='main_tabbar')
-            sessionbox_control = self.control.GroupControl(ClassName="mmui::ChatMasterView")
-            chatbox_control = self.control.GroupControl(ClassName="mmui::ChatMessagePage").CustomControl(ClassName="mmui::XSplitterView")
+            # 三个布局，导航栏(A)、聊天列表(B)、聊天框(C)
+            # _______________
+            # |■|———|    -□×|
+            # | |———|       |
+            # |A| B |   C   |   <--- 微信窗口布局简图示意
+            # | |———|———————|
+            # |=|———|       |
+            # ———————————————
+
+            # 导航栏(A)
+            navigation_control:uia.ToolBarControl = self.control.ToolBarControl(ClassName="mmui::MainTabBar", AutomationId='main_tabbar')
+
+            # 聊天列表(B)
+            sessionbox_control:uia.GroupControl = self.control.GroupControl(ClassName="mmui::ChatMasterView")
+
+            # 聊天框(C)
+            chatbox_control:uia.GroupControl = self.control.GroupControl(ClassName="mmui::ChatMessagePage").CustomControl(ClassName="mmui::XSplitterView")
+
+
             self._navigation_api = NavigationBox(navigation_control, self)
             self._session_api = SessionBox(sessionbox_control, self)
             self._chat_api = ChatBox(chatbox_control, self)
@@ -190,6 +215,31 @@ class WeChatMainWnd(WeChatSubWnd):
             if self._chat_api.msgbox.Exists(0.5):
                 return self._chat_api
 
+    def _get_uia_api_hwnd(self):
+
+        if self.HWND:
+            return self.HWND
+        else:
+            return self.control.NativeWindowHandle
+
+    def _show(self):
+        self.HWND = self._get_uia_api_hwnd()
+        wxlog.debug(f"HWND: {self.HWND}")
+        if not self.HWND:
+            wxlog.error("无法找到微信窗口句柄")
+            return
+
+        # 检查窗口是否已经可见
+        if win32gui.IsWindowVisible(self.HWND):
+            wxlog.debug("微信窗口已经可见，无需重复显示")
+            self.control.SwitchToThisWindow()
+            return
+
+        wxlog.debug("微信窗口不可见，正在显示窗口")
+        win32gui.ShowWindow(self.HWND, 1)
+        win32gui.SetWindowPos(self.HWND, -1, 0, 0, 0, 0, 3)
+        win32gui.SetWindowPos(self.HWND, -2, 0, 0, 0, 0, 3)
+        self.control.SwitchToThisWindow()
     def switch_chat(
             self, 
             keywords: str, 
