@@ -179,9 +179,7 @@ class SessionBox:
                     # 1. 首先尝试完全匹配
                     if text == keywords:
                         if WxParam.ENABLE_HUMANIZATION:
-                            human_click(search_result_item.control,
-                                       min_delay=WxParam.CLICK_DELAY_MIN,
-                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                            human_click(search_result_item,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
                         else:
                             search_result_item.Click()
                         return keywords
@@ -191,9 +189,7 @@ class SessionBox:
                         and (split:=text.split(' 微信号: '))[-1].lower() == keywords.lower()
                     ):
                         if WxParam.ENABLE_HUMANIZATION:
-                            human_click(search_result_item.control,
-                                       min_delay=WxParam.CLICK_DELAY_MIN,
-                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                            human_click(search_result_item,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
                         else:
                             search_result_item.Click()
                         return split[0]  # 返回实际昵称
@@ -203,9 +199,7 @@ class SessionBox:
                         and (split:=text.split(' 昵称: '))[-1].lower() == keywords.lower()
                     ):
                         if WxParam.ENABLE_HUMANIZATION:
-                            human_click(search_result_item.control,
-                                       min_delay=WxParam.CLICK_DELAY_MIN,
-                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                            human_click(search_result_item,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
                         else:
                             search_result_item.Click()
                         return split[0]  # 返回实际备注名
@@ -213,9 +207,7 @@ class SessionBox:
                     # 模糊匹配模式，只要关键词在文本中出现就匹配
                     if keywords in text:
                         if WxParam.ENABLE_HUMANIZATION:
-                            human_click(search_result_item.control,
-                                       min_delay=WxParam.CLICK_DELAY_MIN,
-                                       max_delay=WxParam.CLICK_DELAY_MAX)
+                            human_click(search_result_item,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
                         else:
                             search_result_item.Click()
                         return text
@@ -253,9 +245,7 @@ class SessionBox:
                 break
         
         if WxParam.ENABLE_HUMANIZATION:
-            human_dbl_click(session.control,
-                           min_delay=WxParam.CLICK_DELAY_MIN,
-                           max_delay=WxParam.CLICK_DELAY_MAX)
+            human_dbl_click(session.control,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
         else:
             session.double_click()
             
