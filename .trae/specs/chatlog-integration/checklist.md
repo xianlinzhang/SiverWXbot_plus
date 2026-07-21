@@ -1,0 +1,47 @@
+- [ ] `chatlog_client.py` 文件已创建，包含 `ChatlogError` 与 `ChatlogClient` 类
+- [ ] `ChatlogClient` 实现四个方法（默认使用 `format=json`）：`get_session`、`get_chatroom`、`search_contact`、`get_chatlog`
+- [ ] `get_session` 返回 dict，含 `items` 列表（每项含 `userName`, `nickName`, `content`, `nTime`, `UnreadCount`）
+- [ ] `search_contact` 返回 dict，含 `items` 列表（每项含 `userName`, `alias`, `remark`, `nickName`, `isFriend`）
+- [ ] `get_chatlog` 返回 list[dict]（每项含 `seq`, `time`, `talker`, `talkerName`, `isChatRoom`, `sender`, `senderName`, `isSelf`, `type`, `content`, `contents`）
+- [ ] `ChatlogClient._request` 支持超时（默认 5s）、最多 2 次重试、错误降级
+- [ ] `ChatlogClient.health_check()` 返回布尔值表示服务可达性
+- [ ] `ChatlogClient` 所有公开方法包含函数级注释
+- [ ] `WXBotConfig.__init__` 包含 7 个 chatlog 默认字段（url、listen_switch、context_switch、contact_lookup_switch、polling_interval、context_count、request_timeout）
+- [ ] `WXBotConfig.create_new_config_file` 默认配置字典包含 chatlog 字段
+- [ ] `WXBotConfig.update_global_config` 正确映射 chatlog 字段到实例属性，缺失字段使用默认值
+- [ ] 配置保存接口能将 chatlog 字段持久化到 `config.json`
+- [ ] `WXBot.__init__` 新增 `self.chatlog_client = None`
+- [ ] `WXBot._init_chatlog_client` 根据配置实例化客户端并执行健康检查
+- [ ] `init_wx_listeners` 末尾调用 `_init_chatlog_client`，服务不可达时回退到 UI 监听
+- [ ] `WXBot.chatlog_last_seq` 字典初始化（使用 seq 而非时间戳）
+- [ ] `WXBot.chatlog_listen_loop` 实现：先调用 `get_session` 预过滤未读会话、增量拉取、消息转换、调用 `process_message`、更新 `chatlog_last_seq`
+- [ ] Chatlog 消息 dict 转换为兼容 `wxautox4` 的轻量消息对象（含 type/attr/sender/content/id），映射规则：
+  - `type`: 1→'text', 3→'image', 其他→'unknown'
+  - `attr`: isSelf=True→'self', isChatRoom=True→'group', 其他→'friend'
+  - `sender`: 优先使用 `senderName`，为空时使用 `sender`（wxid）
+  - `content`: 文本直接使用；图片使用 `contents.md5`；语音暂不处理
+  - `id`: 使用 `seq` 字段
+- [ ] `message_handle_callback` 开头判断 `chatlog_listen_switch` 开启时直接 return，避免重复处理
+- [ ] `WXBot.main` 主循环根据 `chatlog_listen_switch` 选择消息源，跳过 `listen_mode` / `ALLListen_mode`
+- [ ] Chatlog 模式下 `wait_time` 取 `max(1, chatlog_polling_interval)`
+- [ ] Chatlog 调用失败时主循环不中断，记录日志后继续
+- [ ] `WXBot._build_chatlog_history` 拉取历史并转换为 MemoryManager 兼容格式
+- [ ] `WXBot._merge_history` 实现去重、排序、截断
+- [ ] `process_message` 在 AI 调用前根据 `chatlog_context_switch` 注入合并后的 history
+- [ ] 群聊 AI 调用分支同样应用上下文增强
+- [ ] 上下文增强失败时降级为仅 MemoryManager，不影响主流程
+- [ ] `init_wx_listeners` 在 `chatlog_contact_lookup_switch` 开启时校验监听对象存在性
+- [ ] 校验失败的对象跳过 UI 注册并记录 WARNING
+- [ ] `self.chatlog_contact_map` 缓存 wxid 与昵称映射
+- [ ] `web_server.py` 新增 `GET/POST /api/chatlog/config` 接口
+- [ ] `web_server.py` 新增 `GET /api/chatlog/status` 接口
+- [ ] `WXBot.get_status` 返回字典包含 `chatlog_listen_switch`、`chatlog_context_switch`、`chatlog_connected`
+- [ ] `templates/dashboard.html` 状态区显示 Chatlog 连接状态徽标
+- [ ] `templates/dashboard.html` 配置区包含 Chatlog 配置卡片（URL、3 个开关、轮询间隔、上下文条数）
+- [ ] 配置保存后能热更新到运行中的 bot 实例
+- [ ] `demo_chatlog.py` 演示脚本可独立运行并验证四个接口
+- [ ] 端到端测试：开启 Chatlog 监听后，微信发消息能被正确处理并自动回复
+- [ ] 端到端测试：开启上下文增强后，AI 回复使用了 Chatlog 历史上下文（日志可见）
+- [ ] 容错测试：关闭 Chatlog 服务后主循环不崩溃，自动降级
+- [ ] `docs/docs.md` 追加 Chatlog 集成说明章节
+- [ ] 所有新增代码通过诊断检查（无语法/类型错误）

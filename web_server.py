@@ -735,6 +735,13 @@ def dashboard():
     config.setdefault('group_split_max_chars', 100)       # 群聊单条最大字数
     config.setdefault('group_split_max_count', 4)         # 群聊最多条数
 
+    config.setdefault('chatlog_listen_switch', False)     # Chatlog 监听模式开关
+    config.setdefault('chatlog_url', 'http://127.0.0.1:5030')  # Chatlog 服务地址
+    config.setdefault('chatlog_polling_interval', 2)      # Chatlog 轮询间隔（秒）
+    config.setdefault('chatlog_request_timeout', 5)       # Chatlog 请求超时（秒）
+    config.setdefault('chatlog_context_switch', False)    # Chatlog 上下文增强开关
+    config.setdefault('chatlog_context_count', 50)        # Chatlog 上下文消息数
+
     force_admin_change_required = is_force_admin_change_required()
     return render_template(
         'dashboard.html',

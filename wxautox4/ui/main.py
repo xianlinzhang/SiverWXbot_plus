@@ -46,9 +46,7 @@ class WeChatSubWnd(BaseUISubWnd):
             hwnd = key
         self.control = uia.ControlFromHandle(hwnd)
         if self.control is not None:
-            chatbox_control = self.control.\
-                GroupControl(ClassName="mmui::ChatMessagePage").\
-                CustomControl(ClassName="mmui::XSplitterView")
+            chatbox_control = self.control.GroupControl(ClassName="mmui::ChatMessagePage").CustomControl(ClassName="mmui::XSplitterView")
             self._chat_api = ChatBox(chatbox_control, self)
             self.nickname = self.control.Name
 

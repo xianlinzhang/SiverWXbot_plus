@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Siver微信机器人 siver_wxbot - 面向对象版本 - wxautox4版本
 # 作者：https://www.siver.top
+import types
 
 version = "V4.7.27"
 version_log = "V4.7.27 - 优化远程访问、关闭SESSION_COOKIE_HTTPONLY方便内外网访问、优化面板接口测试"
@@ -57,6 +58,7 @@ is_wxautox = True  # 标识当前使用的是 wxautox Plus 版本
 import email_send
 import webhook_send
 from logger import log
+from chatlog_client import ChatlogClient, ChatlogError
 
 # ============================================================
 # wxautox 全局参数配置
@@ -244,6 +246,15 @@ class WXBotConfig:
         self.reply_delay_max    = 5     # 最大延迟秒数
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
 
+        # ---------- Chatlog 配置 ----------
+        self.chatlog_url = 'http://127.0.0.1:5030'                     # Chatlog 服务 URL
+        self.chatlog_listen_switch = False                             # Chatlog 监听模式开关
+        self.chatlog_context_switch = False                            # Chatlog 上下文增强开关
+        self.chatlog_contact_lookup_switch = False                     # Chatlog 联系人查询开关
+        self.chatlog_polling_interval = 10*60                           # Chatlog 轮询间隔（秒）
+        self.chatlog_context_count = 20                                # Chatlog 上下文拉取条数
+        self.chatlog_request_timeout = 5                               # Chatlog 请求超时时间（秒）
+
         # 初始化时自动加载配置并同步到属性
         self.load_config()
         self.update_global_config()
@@ -368,6 +379,13 @@ class WXBotConfig:
                     "siver_panel_service_expire_at": "",
                     "siver_panel_last_error_code": "",
                     "siver_panel_last_error_message": "",
+                    "chatlog_url": "http://127.0.0.1:5030",
+                    "chatlog_listen_switch": False,
+                    "chatlog_context_switch": False,
+                    "chatlog_contact_lookup_switch": False,
+                    "chatlog_polling_interval": 3,
+                    "chatlog_context_count": 20,
+                    "chatlog_request_timeout": 5,
                 }
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(base_config, f, ensure_ascii=False, indent=4)
@@ -654,6 +672,30 @@ class WXBotConfig:
         if _siver_panel_needs_save:
             self.save_config()
             log(message='已自动补充 SiverPanel 远程访问配置默认值')
+
+        # Chatlog 配置
+        _chatlog_defaults = {
+            'chatlog_url': 'http://127.0.0.1:5030',
+            'chatlog_listen_switch': False,
+            'chatlog_context_switch': False,
+            'chatlog_contact_lookup_switch': False,
+            'chatlog_polling_interval': 3,
+            'chatlog_context_count': 20,
+            'chatlog_request_timeout': 5,
+        }
+        _chatlog_needs_save = any(k not in self.config for k in _chatlog_defaults)
+        for k, v in _chatlog_defaults.items():
+            self.config.setdefault(k, v)
+        if _chatlog_needs_save:
+            self.save_config()
+            log(message='已自动补充 Chatlog 配置默认值')
+        self.chatlog_url = self.config.get('chatlog_url', 'http://127.0.0.1:5030')
+        self.chatlog_listen_switch = bool(self.config.get('chatlog_listen_switch', False))
+        self.chatlog_context_switch = bool(self.config.get('chatlog_context_switch', False))
+        self.chatlog_contact_lookup_switch = bool(self.config.get('chatlog_contact_lookup_switch', False))
+        self.chatlog_polling_interval = max(1, int(self.config.get('chatlog_polling_interval', 3)))
+        self.chatlog_context_count = max(1, int(self.config.get('chatlog_context_count', 20)))
+        self.chatlog_request_timeout = max(1, int(self.config.get('chatlog_request_timeout', 5)))
 
         log(message="全局配置更新完成")
 
@@ -2007,6 +2049,11 @@ class WXBot:
         self.callback_is_die     = False        # 回调函数是否发生致命错误的标志
         self.msgs_path           = './wx_msgs/' # 消息本地存储路径（当前未启用）
 
+        # Chatlog 相关
+        self.chatlog_client     = None          # Chatlog HTTP 客户端（延迟初始化）
+        self.chatlog_contact_map = {}           # wxid 和 reamrk为key, value 存的是整个用户信息
+        self.chatlog_last_seq   = {}            # 各监听对象的最后处理消息序号 {chat_name: seq}
+
         # 运行统计数据（供状态面板采集）
         self.msg_received_count  = 0            # 已接收消息数
         self.msg_replied_count   = 0            # 已回复消息数
@@ -2069,6 +2116,38 @@ class WXBot:
             return DusAPI(tmp)
         else:
             return OpenAIAPI(tmp)
+
+    def _init_chatlog_client(self):
+        """
+        初始化 Chatlog HTTP 客户端。
+        
+        根据配置中的 chatlog_url 和 chatlog_request_timeout 实例化 ChatlogClient，
+        并执行健康检查验证服务可达性。若服务不可达且 chatlog_listen_switch 开启，
+        则记录 ERROR 日志并自动回退到 UI 监听模式。
+        
+        :return: True 表示初始化成功，False 表示失败（但不阻塞启动）
+        """
+        url = self.config.chatlog_url
+        timeout = self.config.chatlog_request_timeout
+        
+        try:
+            self.chatlog_client = ChatlogClient(base_url=url, timeout=timeout)
+            if self.chatlog_client.health_check():
+                    log(message=f"Chatlog 服务连接成功: {url}")
+                    self.refresh_chatlog_contacts()
+                    return True
+            else:
+                log(level="WARNING", message=f"Chatlog 服务不可达: {url}")
+                if self.config.chatlog_listen_switch:
+                    log(level="ERROR", message="Chatlog 监听模式已开启但服务不可达，已自动回退到 UI 监听模式")
+                    self.config.chatlog_listen_switch = False
+                return False
+        except Exception as e:
+            log(level="ERROR", message=f"Chatlog 客户端初始化失败: {e}")
+            if self.config.chatlog_listen_switch:
+                log(level="ERROR", message="Chatlog 监听模式已开启但服务不可达，已自动回退到 UI 监听模式")
+                self.config.chatlog_listen_switch = False
+            return False
 
     def _get_group_api(self, group_name):
         """
@@ -2322,47 +2401,52 @@ class WXBot:
         log(message='启动wxautox监听器...')
         self.wx.StopListening()
         time.sleep(1)
-        self.wx.StartListening()
 
-        expected_listeners = []
+        if self.config.chatlog_listen_switch:
+            log(message="Chatlog 监听模式已开启，跳过 wxautox4 UI 监听器注册")
+            expected_listeners = []
+        else:
+            self.wx.StartListening()
 
-        # 添加管理员账号监听（管理员始终监听，不受白名单模式限制）
-        time.sleep(0.5)
-        self._add_listen_chat_once(self.config.cmd, "管理员")
-        expected_listeners.append(self.config.cmd)
+            expected_listeners = []
 
-        # 白名单模式下逐一添加用户监听
-        if not self.config.AllListen_switch:
-            log(message="白名单模式开启")
-            for user in self.config.listen_list:
-                time.sleep(0.5)
-                self._add_listen_chat_once(user, "用户")
-                expected_listeners.append(user)
+            # 添加管理员账号监听（管理员始终监听，不受白名单模式限制）
+            time.sleep(0.5)
+            self._add_listen_chat_once(self.config.cmd, "管理员")
+            expected_listeners.append(self.config.cmd)
 
-        # 若群机器人开关开启，则添加群聊监听
-        if self.config.group_switch:
-            for user in self.config.group:
-                time.sleep(0.5)
-                self._add_listen_chat_once(user, "群组")
-                expected_listeners.append(user)
-
-        # 注册自定义转发监听（跳过已在私聊/群组列表中的来源，避免重复注册）
-        if self.config.custom_forward_switch:
-            # group_switch=OFF 时群组未注册监听器，不能算作"已监听"，否则转发来源中的同名群会被漏掉
-            _listened_groups = set(self.config.group) if self.config.group_switch else set()
-            _already_listened = set(self.config.listen_list) | _listened_groups | {self.config.cmd}
-            _fwd_sources = set()
-            for _rule in self.config.custom_forward_list:
-                if _rule.get('all_sources', False):
-                    continue  # 全部来源：依赖已有的私聊/群组监听，无需额外注册
-                for _src in _rule.get('sources', []):
-                    if _src:
-                        _fwd_sources.add(_src)
-            for _source in _fwd_sources:
-                if _source and _source not in _already_listened:
+            # 白名单模式下逐一添加用户监听
+            if not self.config.AllListen_switch:
+                log(message="白名单模式开启")
+                for user in self.config.listen_list:
                     time.sleep(0.5)
-                    self._add_listen_chat_once(_source, "自定义转发监听源")
-                    expected_listeners.append(_source)
+                    self._add_listen_chat_once(user, "用户")
+                    expected_listeners.append(user)
+
+            # 若群机器人开关开启，则添加群聊监听
+            if self.config.group_switch:
+                for user in self.config.group:
+                    time.sleep(0.5)
+                    self._add_listen_chat_once(user, "群组")
+                    expected_listeners.append(user)
+
+            # 注册自定义转发监听（跳过已在私聊/群组列表中的来源，避免重复注册）
+            if self.config.custom_forward_switch:
+                # group_switch=OFF 时群组未注册监听器，不能算作"已监听"，否则转发来源中的同名群会被漏掉
+                _listened_groups = set(self.config.group) if self.config.group_switch else set()
+                _already_listened = set(self.config.listen_list) | _listened_groups | {self.config.cmd}
+                _fwd_sources = set()
+                for _rule in self.config.custom_forward_list:
+                    if _rule.get('all_sources', False):
+                        continue  # 全部来源：依赖已有的私聊/群组监听，无需额外注册
+                    for _src in _rule.get('sources', []):
+                        if _src:
+                            _fwd_sources.add(_src)
+                for _source in _fwd_sources:
+                    if _source and _source not in _already_listened:
+                        time.sleep(0.5)
+                        self._add_listen_chat_once(_source, "自定义转发监听源")
+                        expected_listeners.append(_source)
 
         self._verify_initial_listeners(expected_listeners)
 
@@ -2416,6 +2500,9 @@ class WXBot:
                 log(message="定时朋友圈注册完成")
             except Exception as e:
                 log(level="ERROR", message=f"定时朋友圈注册失败：{e}")
+
+        # 初始化 Chatlog 客户端
+        self._init_chatlog_client()
 
         log(message="监听器初始化完成")
 
@@ -2849,6 +2936,572 @@ class WXBot:
                     state['next_fire'] = None
 
     # ----------------------------------------------------------
+    # 联系人查询增强
+    # ----------------------------------------------------------
+
+    def _is_contact_in_listen_list(self, chat_name, listen_list):
+        """
+        判断联系人是否在监听列表中，支持 userName、nickName、alias、remark 四种匹配方式。
+        
+        :param chat_name:   当前会话名称（通常是 nickName 或 userName）
+        :param listen_list: 监听列表
+        :return:            True 表示匹配成功，False 表示匹配失败
+        
+        匹配逻辑：
+        1. 首先进行精确匹配（chat_name 直接在 listen_list 中）
+        2. 如果精确匹配失败，则通过联系人映射表进行扩展匹配
+        3. 从映射表中查找 chat_name 对应的所有别名（包括 wxid、昵称、微信号、备注）
+        4. 检查这些别名是否在监听列表中
+        """
+        # 第一步：精确匹配，chat_name 直接在监听列表中
+        if chat_name in listen_list:
+            return True
+        
+        # 第二步：扩展匹配，如果联系人映射表存在
+        if self.chatlog_contact_map:
+            # 初始化一个集合，用于存储所有可能的别名
+            mapped_names = set()
+            
+            # 查找 chat_name 在映射表中对应的别名（正向映射）
+            if chat_name in self.chatlog_contact_map:
+                contact = self.chatlog_contact_map[chat_name]
+                wxid = contact.get('userName', '')  # 微信内部 ID
+                nickname = contact.get('nickName', '')  # 昵称
+                alias = contact.get('alias', '')  # 微信号（自定义 ID）
+                remark = contact.get('remark', '')  # 备注名
+
+                if not wxid:
+                    mapped_names.add(wxid)
+
+                if not remark:
+                    mapped_names.add(remark)
+
+            
+            # 检查所有别名是否在监听列表中
+            for mapped_name in mapped_names:
+                if mapped_name in listen_list:
+                    return True
+        
+        # 所有匹配方式都失败，返回 False
+        return False
+
+    def refresh_chatlog_contacts(self):
+        """
+        刷新 Chatlog 联系人缓存。
+        
+        调用 Chatlog API 获取所有联系人，构建 userName、nickName、alias、remark 的双向映射，
+        用于在关键词匹配失败时扩展匹配范围。
+        
+        映射逻辑：
+        - 将每个联系人的 wxid、nickName、alias、remark 四种标识互相映射
+        - 例如：wxid_xxx -> 昵称, 昵称 -> wxid_xxx, 备注 -> 昵称 等
+        - 这样当用户使用昵称搜索但系统存储的是 wxid 时，也能通过映射找到对应联系人
+        """
+        # 检查 Chatlog 客户端是否已初始化，未初始化则直接返回
+        if not self.chatlog_client:
+            return
+        
+        try:
+            # 调用 Chatlog API 搜索所有联系人
+            contacts = self.chatlog_client.search_contact(is_friend=1)
+            
+            # 没有获取到联系人数据则直接返回
+            if not contacts:
+                return
+            
+            # 初始化新的联系人映射字典
+            new_map = {}
+
+            contacts_items = contacts.get('items', [])
+
+            # 遍历所有联系人项
+            for contact in contacts_items:
+                # 提取联系人的四种标识信息
+                wxid = contact.get('userName', '')      # 微信内部 ID
+                nickname = contact.get('nickName', '')   # 昵称
+                alias = contact.get('alias', '')         # 微信号（自定义 ID）
+                remark = contact.get('remark', '')       # 备注名
+                
+                # 将四种标识放入列表，便于后续构建双向映射
+                # identifiers = [wxid, nickname, alias, remark]
+
+                new_map[wxid] = contact
+
+                if not remark:
+                    new_map[remark] = contact
+
+
+            
+            # 更新联系人映射缓存，替换旧数据
+            self.chatlog_contact_map = new_map
+
+            # 记录日志，显示更新的记录数量
+            log(message=f"Chatlog 联系人缓存已更新，共 {len(contacts_items)} 条记录")
+        
+        except ChatlogError as e:
+            # Chatlog API 调用失败，记录错误日志
+            log(level="ERROR", message=f"刷新 Chatlog 联系人失败: {e}")
+        except Exception as e:
+            # 处理过程中发生其他异常，记录错误日志
+            log(level="ERROR", message=f"刷新 Chatlog 联系人异常: {e}")
+
+    # ----------------------------------------------------------
+    # AI 上下文增强
+    # ----------------------------------------------------------
+
+    def _enrich_context_with_chatlog(self, chat_name, base_history=None):
+        """
+        合并 Chatlog 历史消息与 MemoryManager 短期记忆，增强 AI 回复上下文。
+        
+        :param chat_name:   聊天对象名称
+        :param base_history: MemoryManager 获取的基础历史消息列表
+        :return:            合并后的历史消息列表
+        """
+        if not self.config.chatlog_context_switch or not self.chatlog_client:
+            return base_history or []
+        
+        try:
+            chatlog_msgs = self.chatlog_client.get_chatlog(
+                talker=chat_name, 
+                limit=self.config.chatlog_context_count
+            )
+            
+            if not chatlog_msgs:
+                return base_history or []
+            
+            chatlog_history = []
+            for msg in chatlog_msgs:
+                if msg.get('isSelf', False):
+                    role = 'assistant'
+                else:
+                    role = 'user'
+                
+                content = msg.get('content', '')
+                if content:
+                    chatlog_history.append({"role": role, "content": content})
+            
+            base_history = base_history or []
+            
+            merged_history = base_history + chatlog_history
+            
+            total_limit = self.config.memory_context_count + self.config.chatlog_context_count
+            if len(merged_history) > total_limit:
+                merged_history = merged_history[-total_limit:]
+            
+            log(message=f"Chatlog 上下文增强：{chat_name} 合并后历史消息数 {len(merged_history)}")
+            
+            return merged_history
+        
+        except ChatlogError as e:
+            log(level="WARNING", message=f"Chatlog 上下文增强失败 [{chat_name}]: {e}")
+            return base_history or []
+        except Exception as e:
+            log(level="ERROR", message=f"Chatlog 上下文增强异常 [{chat_name}]: {e}")
+            return base_history or []
+
+    # ----------------------------------------------------------
+    # Chatlog 轮询监听模式
+    # ----------------------------------------------------------
+
+    def _convert_chatlog_msg(self, msg_dict):
+        """
+        将 Chatlog 返回的消息字典转换为与 wxautox4 兼容的轻量消息对象。
+        
+        :param msg_dict: Chatlog 返回的消息字典
+        :return: types.SimpleNamespace，包含 type、attr、sender、content、id 字段
+        """
+        import types
+        
+        msg = types.SimpleNamespace()
+        
+        msg_type = msg_dict.get('type', 0)
+        if msg_type == 1:
+            msg.type = 'text'
+        elif msg_type == 3:
+            msg.type = 'image'
+        else:
+            msg.type = 'unknown'
+        
+        if msg_dict.get('isSelf', False):
+            msg.attr = 'self'
+        elif msg_dict.get('isChatRoom', False):
+            msg.attr = 'group'
+        else:
+            msg.attr = 'friend'
+        
+        msg.sender = msg_dict.get('senderName', '') or msg_dict.get('sender', '')
+        msg.content = msg_dict.get('content', '')
+        
+        if msg.type == 'image' and msg_dict.get('contents'):
+            msg.content = msg_dict['contents'].get('md5', '')
+        
+        msg.id = msg_dict.get('seq', 0)
+        
+        return msg
+
+    def chatlog_process_message(self, chat_name, msg_dict):
+        """
+        Chatlog 模式下直接处理消息并发送回复，无需获取子窗口对象。
+        
+        :param chat_name: 会话名称（备注名）
+        :param msg_dict: Chatlog API 返回的消息字典
+        :return: 发送结果
+        """
+        result = True
+        msg = self._convert_chatlog_msg(msg_dict)
+        log(message=f"chatlog_process_message 处理 {chat_name} 消息：{msg.content}")
+        
+        is_monitored = (
+            (self.config.AllListen_switch and chat_name not in self.config.listen_list)
+            or (not self.config.AllListen_switch and chat_name in self.config.listen_list)
+            or (chat_name in self.config.group and self.config.group_switch)
+            or (chat_name == self.config.cmd)
+        )
+        if not is_monitored:
+            return True
+        
+        # --- 群聊消息处理 ---
+        if chat_name in self.config.group:
+            if not self.config.group_switch:
+                return True
+            
+            if self.config.group_keyword_switch:
+                _kw_at_pass = (not self.config.group_keyword_at_only) or (self.config.AtMe in msg.content)
+                if _kw_at_pass:
+                    for keyword in self.config.keyword_dict:
+                        if keyword in msg.content:
+                            log(message=f"群组 {chat_name} 关键字消息：" + msg.content)
+                            self.config.human_delay()
+                            result = self.wx.SendMsg(msg=self.config.keyword_dict[keyword], who=chat_name)
+                            self.msg_replied_count += 1
+                            time.sleep(1)
+                            return result
+            
+            if (self.config.AtMe in msg.content and self.config.group_reply_at) or not self.config.group_reply_at:
+                if self.config.group_listen_only:
+                    log(message=f"群组 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
+                    return result
+                
+                content_without_at = re.sub(self.config.AtMe, "", msg.content).strip()
+                log(message=f"群组 {chat_name} 消息：" + content_without_at)
+                content_with_sender = f"{msg.sender}: {content_without_at}"
+                
+                try:
+                    history = []
+                    if self.config.memory_switch and self.memory_manager:
+                        history = self.memory_manager.get_messages(chat_name, self.config.memory_context_count)
+                    history = self._enrich_context_with_chatlog(chat_name, history)
+                    
+                    _base_group_prompt = self._get_group_prompt(chat_name)
+                    if self.config.group_split_reply_switch:
+                        _effective_group_prompt = self._build_split_prompt(
+                            _base_group_prompt,
+                            self.config.group_split_max_chars,
+                            self.config.group_split_max_count
+                        )
+                    else:
+                        _effective_group_prompt = _base_group_prompt
+                    
+                    if self.config.group_image_recognition_switch:
+                        if msg.type == 'image':
+                            rec_api = self._init_api_by_index(self.config.group_image_recognition_api)
+                            reply = rec_api.chat(
+                                f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                                prompt=_effective_group_prompt,
+                                history=history,
+                                image_path=msg.content
+                            )
+                        elif '+引用的图片:' in content_without_at:
+                            text_part, img_path = content_without_at.split('+引用的图片:', 1)
+                            rec_api = self._init_api_by_index(self.config.group_image_recognition_api)
+                            reply = rec_api.chat(
+                                f"{msg.sender}: {text_part.strip()}" if text_part.strip() else f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                                prompt=_effective_group_prompt,
+                                history=history,
+                                image_path=img_path.strip()
+                            )
+                        else:
+                            group_api = self._get_group_api(chat_name)
+                            reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                    else:
+                        group_api = self._get_group_api(chat_name)
+                        reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                except Exception as e:
+                    print(traceback.format_exc())
+                    log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
+                    reply = self.config.api_error_reply
+                
+                if reply == "API返回错误，请稍后再试":
+                    reply = self.config.api_error_reply
+                else:
+                    reply = self._clean_reply_for_send(reply)
+                
+                if self.config.group_split_reply_switch:
+                    parts = self._parse_split_reply(reply, self.config.group_split_max_count)
+                else:
+                    parts = [reply]
+                
+                for i, part in enumerate(parts):
+                    # 加日志调试
+                    log(message=f"{chat_name} 回复第{i}次：{part}")
+                    self.config.human_delay()
+                    if i == 0 and self.config.group_reply_at_msg:
+                        result = self.wx.SendMsg(msg=part, who=chat_name, at=msg.sender)
+                    else:
+                        result = self.wx.SendMsg(msg=part, who=chat_name)
+                
+                self.msg_replied_count += 1
+                return result
+            
+            return result
+        
+        # --- 管理员命令处理 ---
+        if chat_name == self.config.cmd:
+            chat_proxy = types.SimpleNamespace()
+            chat_proxy.who = chat_name
+            chat_proxy.SendMsg = lambda m: self.wx.SendMsg(msg=m, who=chat_name)
+            chat_proxy.chat_type = 'chat'
+            result = self.process_command(chat_proxy, msg)
+            return result
+        
+        # --- 普通好友：调用 AI 回复 ---
+        if (not self.config.AllListen_switch and
+                chat_name not in self.config.listen_list and
+                chat_name not in self.config.group and
+                chat_name != self.config.cmd):
+            return result
+        if (self.config.AllListen_switch and chat_name in self.config.listen_list):
+            return result
+        
+        result = self._chatlog_send_ai(chat_name, msg)
+        return result
+
+    def _chatlog_send_ai(self, chat_name, message):
+        """
+        Chatlog 模式下对私聊消息调用 AI 接口并发送回复。
+        
+        :param chat_name: 会话名称（备注名）
+        :param message: 消息对象
+        :return: 发送结果
+        """
+        result = True
+        api_error_reply = False
+        
+        try:
+            # 关键字消息
+            reply = None
+            is_keyword = False
+            if self.config.chat_keyword_switch:
+                for keyword in self.config.keyword_dict:
+                    if keyword in message.content:
+                        is_keyword = True
+                        log(message=f"私聊 {chat_name} 关键字消息：" + message.content)
+                        reply = self.config.keyword_dict[keyword]
+            
+            if not is_keyword:
+                if self.config.chat_listen_only:
+                    log(message=f"私聊 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
+                    return True
+                
+                history = []
+                if self.config.memory_switch and self.memory_manager:
+                    history = self.memory_manager.get_messages(chat_name, self.config.memory_context_count)
+                
+                history = self._enrich_context_with_chatlog(chat_name, history)
+                
+                _base_prompt = self._get_chat_prompt(chat_name)
+                if self.config.chat_split_reply_switch:
+                    _effective_prompt = self._build_split_prompt(
+                        _base_prompt,
+                        self.config.chat_split_max_chars,
+                        self.config.chat_split_max_count
+                    )
+                else:
+                    _effective_prompt = _base_prompt
+                
+                if self.config.chat_image_recognition_switch:
+                    if message.type == 'image':
+                        rec_api = self._init_api_by_index(self.config.chat_image_recognition_api)
+                        reply = rec_api.chat(
+                            "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                            prompt=_effective_prompt,
+                            history=history,
+                            image_path=message.content
+                        )
+                    elif '+引用的图片:' in message.content:
+                        text_part, img_path = message.content.split('+引用的图片:', 1)
+                        rec_api = self._init_api_by_index(self.config.chat_image_recognition_api)
+                        reply = rec_api.chat(
+                            text_part.strip() or "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                            prompt=_effective_prompt,
+                            history=history,
+                            image_path=img_path.strip()
+                        )
+                    else:
+                        reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
+                        log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
+                else:
+                    reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
+                    log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
+        except Exception as e:
+            print(traceback.format_exc())
+            log(level="ERROR", message=str(e) + "\nAPI返回错误，请稍后再试")
+            api_error_reply = True
+            reply = self.config.api_error_reply
+        
+        if reply == "API返回错误，请稍后再试":
+            reply = self.config.api_error_reply
+            api_error_reply = True
+        else:
+            reply = self._clean_reply_for_send(reply)
+        
+        if self.config.chat_split_reply_switch:
+            parts = self._parse_split_reply(reply, self.config.chat_split_max_count)
+        else:
+            parts = [reply]
+        
+        for part in parts:
+            self.config.human_delay()
+            if len(part) >= 2000:
+                for segment in self.config.split_long_text(part):
+                    result = self.wx.SendMsg(msg=segment, who=chat_name)
+            else:
+                result = self.wx.SendMsg(msg=part, who=chat_name)
+        
+        self.msg_replied_count += 1
+        return result
+
+    def chatlog_listen_loop(self):
+        """
+        Chatlog 轮询监听模式主函数。
+        
+        通过 Chatlog API 轮询获取新消息并触发自动回复，作为 wxautox4 回调监听的替代方案。
+        流程：
+        1. 调用 get_session() 获取所有会话，筛选出 UnreadCount > 0 的会话（未读预过滤）
+        2. 对每个有未读消息的监听对象调用 get_chatlog(talker, limit=50)
+        3. 使用 seq 过滤出大于本地 last_seq 的消息，避免重复处理
+        4. 首次启动时初始化 last_seq 为当前最大 seq，避免回放历史
+        """
+        # 检查 Chatlog 客户端是否已初始化，未初始化则直接返回
+        if not self.chatlog_client:
+            return
+        
+        try:
+            session_result = self.chatlog_client.get_session(
+                has_unread=1,
+                ignore_usernames="brandsessionholder,gh_edac0ec6a0ba,newsapp,gh_b6f1d17d2ffc,gh_315e955abdf5,brandservicesessionholder,notifymessage"
+            )
+            sessions = session_result.get('items', [])
+            
+            if not sessions:
+                return
+            
+            for session in sessions:
+                # 获取会话名称，优先使用昵称，其次使用用户名
+                session_wxid = session.get('nickName', '') or session.get('userName', '')
+                # 获取会话未读消息数量
+                session_unread_count = session.get('UnreadCount', 0)
+                # 获取会话最后消息时间
+                session_nTime = session.get('nTime', '')
+            
+                if session_wxid not in self.chatlog_contact_map:
+                    log(message=f"Chatlog 监听 {session_wxid} 不在用户列表里")
+                    continue
+
+                contact = self.chatlog_contact_map[session_wxid]
+                wxid = contact.get('userName', '')  # 微信内部 ID
+                nickname = contact.get('nickName', '')  # 昵称
+                alias = contact.get('alias', '')  # 微信号（自定义 ID）
+                chat_name = contact.get('remark', '')  # 备注名
+
+                # 获取未读消息数量
+                UnreadCount = session.get('UnreadCount', 0)
+                
+                # 记录日志，方便调试和监控
+                log(message=f"chatlog_listen_loop 监听 {chat_name} 有 {UnreadCount} 未读消息")
+                
+                # 跳过没有名称的会话
+                if not chat_name:
+                    continue
+                
+                # 判断该会话是否需要被监听，满足以下任一条件即监听：
+                # 1. 开启全局监听模式且该会话不在排除列表中
+                # 2. 未开启全局监听模式但该会话在监听列表中
+                # 3. 该会话是群聊且群聊监听已开启
+                # 4. 该会话是命令控制会话
+                # 支持 userName、nickName、alias、remark 四种匹配方式
+
+                is_contact_in_contact_listen_list = self._is_contact_in_listen_list(chat_name, self.config.listen_list)
+                is_contact_in_group_listen_list = self._is_contact_in_listen_list(chat_name, self.config.group)
+
+                log(message=f"Chatlog is_contact_in_contact_listen_list: {is_contact_in_contact_listen_list} ")
+                log(message=f"Chatlog is_contact_in_group_listen_list: {is_contact_in_group_listen_list} ")
+
+                is_monitored = (
+                    (self.config.AllListen_switch and not is_contact_in_contact_listen_list)
+                    or (not self.config.AllListen_switch and is_contact_in_contact_listen_list)
+                    or (is_contact_in_group_listen_list and self.config.group_switch)
+                    or (chat_name == self.config.cmd)
+                )
+
+                log(message=f"chatlog_listen_loop {chat_name} is_monitored: {is_monitored} ")
+                
+                # 跳过不需要监听的会话
+                if not is_monitored:
+                    continue
+                
+                try:
+                    # 调用 Chatlog API 获取该会话最近30天的消息（最多500条作为安全上限）
+                    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    msgs = self.chatlog_client.get_chatlog(talker=chat_name, time=f"{start_date}~{end_date}", limit=500)
+                    
+                    # 没有获取到消息则跳过
+                    if not msgs:
+                        continue
+                    
+                    # 获取该会话上次处理到的最大 seq，用于过滤新消息
+                    last_seq = self.chatlog_last_seq.get(chat_name, 0)
+                    
+                    # 按 seq 升序排序，确保消息顺序正确
+                    msgs.sort(key=lambda m: m.get('seq', 0))
+                    
+                    # 过滤出 isSelf=False 且 seq > last_seq 的消息（他人发送的新消息），取最新的 UnreadCount 项
+                    new_messages = [m for m in msgs if not m.get('isSelf', False) and m.get('seq', 0) > last_seq][-UnreadCount:]
+                    
+                    # 没有新消息则跳过
+                    if not new_messages:
+                        continue
+                    
+                    # 遍历所有新消息进行处理
+                    for msg_dict in new_messages:
+                        try:
+                            # 直接调用 chatlog_process_message 处理消息，无需子窗口
+                            self.chatlog_process_message(chat_name, msg_dict)
+                        except Exception as e:
+                            # 单条消息处理失败不影响其他消息，记录错误日志
+                            log(level="ERROR", message=f"Chatlog 处理消息失败 [{chat_name}]: {e}")
+                    
+                    # 更新该会话的 last_seq 为当前所有消息的最大 seq，下次轮询时从该位置开始
+                    # 注意：必须在消息处理完成后才更新，否则下一轮轮询时可能重复处理
+                    max_seq = max(m.get('seq', 0) for m in msgs)
+                    self.chatlog_last_seq[chat_name] = max_seq
+                    
+                except ChatlogError as e:
+                    # Chatlog API 调用失败，记录错误日志
+                    log(level="ERROR", message=f"Chatlog 获取消息失败 [{chat_name}]: {e}")
+                except Exception as e:
+                    # 处理会话过程中发生其他异常，记录错误日志
+                    log(level="ERROR", message=f"Chatlog 处理会话异常 [{chat_name}]: {e}")
+        
+        except ChatlogError as e:
+            # 获取会话列表失败，记录错误日志
+            log(level="ERROR", message=f"Chatlog 轮询失败: {e}")
+        except Exception as e:
+            # 轮询过程中发生其他异常，记录错误日志
+            log(level="ERROR", message=f"Chatlog 轮询异常: {e}")
+
+    # ----------------------------------------------------------
     # 消息回调与处理入口
     # ----------------------------------------------------------
 
@@ -2860,6 +3513,9 @@ class WXBot:
         :param msg:  消息对象（含 type、attr、sender、content 等属性）
         :param chat: 聊天窗口子对象（含 who 等属性）
         """
+        if self.config.chatlog_listen_switch:
+            return
+        
         try:
             # 记录原始消息日志
             message_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
@@ -3042,6 +3698,9 @@ class WXBot:
                         history = self.memory_manager.get_messages(
                             chat.who, self.config.memory_context_count
                         )
+                    
+                    history = self._enrich_context_with_chatlog(chat.who, history)
+                    
                     # 构建有效 prompt（拆分开关开启时注入格式要求）
                     _base_group_prompt = self._get_group_prompt(chat.who)
                     if self.config.group_split_reply_switch:
@@ -3309,6 +3968,9 @@ class WXBot:
                     history = self.memory_manager.get_messages(
                         chat.who, self.config.memory_context_count
                     )
+                
+                history = self._enrich_context_with_chatlog(chat.who, history)
+                
                 # 构建有效 prompt（拆分开关开启时注入格式要求）
                 _base_prompt = self._get_chat_prompt(chat.who)
                 if self.config.chat_split_reply_switch:
@@ -4306,6 +4968,9 @@ class WXBot:
 
         :return: 过滤后的新消息列表
         """
+        if self.config.chatlog_listen_switch:
+            return []
+        
         AllMessage = self.wx.GetAllMessage()           # 获取当前窗口所有消息
         new_msg    = self.new_msg_get_plus(AllMessage) # 过滤出上一条 Self 消息之后的新消息
         return new_msg
@@ -4313,6 +4978,7 @@ class WXBot:
     def add_chat_to_listen(self, chat):
         """
         将指定会话加入全局动态监听列表，并向 wxautox 注册监听回调。
+        在 Chatlog 模式下，仅获取子窗口用于发送消息，不添加到动态监听列表。
 
         :param chat: 会话昵称（字符串）
         :return:     校验成功的子窗口对象；失败返回 None
@@ -4320,6 +4986,9 @@ class WXBot:
         sub_chat = self._add_and_verify_subwindow(chat)
         if not sub_chat:
             return None
+
+        if self.config.chatlog_listen_switch:
+            return sub_chat
 
         if self.is_chat_listened(chat):
             return sub_chat
@@ -4350,6 +5019,8 @@ class WXBot:
         :param timeout:   超时检测间隔（秒），默认 10 秒
         :return:          更新后的 last_time
         """
+        if self.config.chatlog_listen_switch:
+            return last_time
 
         def process_new_messages():
             """
@@ -4576,6 +5247,9 @@ class WXBot:
             "chat_max_round_reset_days": self.config.chat_max_round_reset_days,
             "pause_chat_reply":      self.config.chat_listen_only,
             "pause_group_reply":     self.config.group_listen_only,
+            "chatlog_listen_switch":  self.config.chatlog_listen_switch,
+            "chatlog_context_switch": self.config.chatlog_context_switch,
+            "chatlog_connected":      self.chatlog_client is not None and self.chatlog_client.health_check(),
         }
 
     def stop_wxbot(self):
@@ -4605,10 +5279,6 @@ class WXBot:
         else:
             log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
             log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
-            log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
-            log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
-            log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
-            log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
             return False
 
         # 初始化微信监听器
@@ -4626,13 +5296,9 @@ class WXBot:
         except Exception as e:
             print(traceback.format_exc())
             log(level="ERROR", message=str(e) + "\n 初始化微信监听器失败，请检查微信是否启动登录正确，微信主窗口是否开着")
-            log(level="ERROR", message=str(e) + "\n 初始化微信监听器失败，请检查微信是否启动登录正确，微信主窗口是否开着")
+
             log(level="ERROR", message=str(e) + "\n 请尝试退出wx再重新登录后再启动")
-            log(level="ERROR", message=str(e) + "\n 请尝试退出wx再重新登录后再启动")
             log(level="ERROR", message=str(e) + "\n 若重启wx还是不行，就请重启整个面板程序，面板和wx都重启了还不行就请进入面板右上角文档检查环境要求，wx版本是否匹配,4.1.7 ~ 4.1.9.35")
-            log(level="ERROR", message=str(e) + "\n 若重启wx还是不行，就请重启整个面板程序，面板和wx都重启了还不行就请进入面板右上角文档检查环境要求，wx版本是否匹配,4.1.7 ~ 4.1.9.35")
-            log(level="ERROR", message=str(e) + "\n 若重启wx还是不行，就请重启整个面板程序，面板和wx都重启了还不行就请进入面板右上角文档检查环境要求，wx版本是否匹配,4.1.7 ~ 4.1.9.35")
-            log(level="ERROR", message=str(e) + "\n 若以上情况都检查完没有问题，那大概率为wx本身或者windows系统不稳定导致的，重启程序即可，若是一直这样，如果您是虚拟机就请分配更多性能，若是实体机可以联系作者询问")
             log(level="ERROR", message=str(e) + "\n 若以上情况都检查完没有问题，那大概率为wx本身或者windows系统不稳定导致的，重启程序即可，若是一直这样，如果您是虚拟机就请分配更多性能，若是实体机可以联系作者询问")
             self.run_flag = False
 
@@ -4675,8 +5341,15 @@ class WXBot:
                             self.is_err(self.wx.nickname + "  智能客服bot监听新好友出错！！请检查程序！！", e)
                         check_new_counter = 0
 
+                # ---- Chatlog 监听模式 ----
+                if self.config.chatlog_listen_switch:
+                    try:
+                        self.chatlog_listen_loop()
+                    except Exception as e:
+                        log(level="ERROR", message=f"Chatlog 监听模式出错：{e}")
+                
                 # ---- 全局监听模式（黑名单模式下启用）----
-                if self.config.AllListen_switch:
+                elif self.config.AllListen_switch:
                     try:
                         last_time = self.ALLListen_mode(last_time=last_time)
                     except Exception as e:
@@ -4730,7 +5403,8 @@ class WXBot:
                 )
                 self.run_flag = False
 
-            time.sleep(wait_time)
+            _sleep_time = self.config.chatlog_polling_interval if self.config.chatlog_listen_switch else wait_time
+            time.sleep(_sleep_time)
 
         log(level="WARNING", message='siver_wxbot主线程安全退出，正在退出监听...')
 

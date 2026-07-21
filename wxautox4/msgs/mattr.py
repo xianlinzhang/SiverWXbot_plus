@@ -41,6 +41,8 @@ class FriendMessage(HumanMessage):
             additonal_attr: Dict[str, Any]={}
         ):
         super().__init__(control, parent, additonal_attr)
+        self.sender = parent.who
+        self.sender_remark = parent.who
 
     def _click(self, x, y, right=False):
         self.roll_into_view()
@@ -64,6 +66,8 @@ class SelfMessage(HumanMessage):
             additonal_attr: Dict[str, Any]={}
         ):
         super().__init__(control, parent, additonal_attr)
+        self.sender = parent.root.nickname
+        self.sender_remark = parent.root.nickname
 
     def _click(self, x, y, right=False):
         self.roll_into_view()

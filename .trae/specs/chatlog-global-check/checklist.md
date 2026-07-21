@@ -1,0 +1,5 @@
+- [x] Checkpoint 1: 当 `chatlog_listen_switch=True` 时，`ALLListen_mode()` 方法直接返回，不调用任何界面消息获取方法
+- [x] Checkpoint 2: 当 `chatlog_listen_switch=True` 时，`next_message_handle()` 方法直接返回空列表，不调用 `wx.GetAllMessage()`
+- [x] Checkpoint 3: 当 `chatlog_listen_switch=True` 时，`add_chat_to_listen()` 方法不调用 `wx.AddListenChat()`，只获取子窗口
+- [x] Checkpoint 4: Python 语法检查通过
+- [x] Checkpoint 5: 端到端测试通过

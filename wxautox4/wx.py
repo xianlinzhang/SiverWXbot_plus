@@ -62,7 +62,7 @@ class Listener(ABC):
                 wxlog.debug(f'监听消息失败：{traceback.format_exc()}')
             
             if WxParam.ENABLE_HUMANIZATION:
-                human_noise_action(WxParam.NOISE_ACTION_PROBABILITY)
+                # human_noise_action(WxParam.NOISE_ACTION_PROBABILITY)
                 human_sleep(WxParam.LISTEN_INTERVAL_MIN, WxParam.LISTEN_INTERVAL_MAX)
             else:
                 time.sleep(WxParam.LISTEN_INTERVAL_MIN)
@@ -271,23 +271,49 @@ class WeChat(Chat, Listener):
             wxlog.debug('Debug mode is on')
         
     def _get_listen_messages(self):
+        """
+        轮询获取所有监听对象的新消息并异步处理
+        
+        该方法是消息监听的核心轮询逻辑，负责遍历所有已注册的监听对象，
+        获取新消息并通过线程池异步调用回调函数处理。同时会检测无效的监听对象并自动移除。
+        """
         try:
+            # 刷新标准输出缓冲区，确保日志及时输出
             sys.stdout.flush()
         except:
+            # 忽略刷新失败的异常，不影响主流程
             pass
+        
+        # 复制监听字典，避免在遍历过程中因字典修改导致异常
         temp_listen = self.listen.copy()
+        
+        # 遍历所有已注册的监听对象
         for who in temp_listen:
+            # 获取聊天对象和对应的回调函数
             chat, callback = temp_listen.get(who, (None, None))
+            
             try:
+                # 检查聊天对象是否有效（对象存在且微信窗口仍在运行）
                 if chat is None or not chat._api.exists():
+                    # 移除无效的监听对象
                     self.RemoveListenChat(who)
                     continue
             except:
+                # 忽略检查过程中的异常，继续处理下一个监听对象
                 continue
+            
+            # 使用锁保护消息获取过程，避免并发访问导致的数据不一致
             with self._lock:
+                # 获取该聊天对象的新消息列表
                 msgs = chat.GetNewMessage()
+                
+                # 遍历每条新消息
                 for msg in msgs:
+                    # 记录调试日志，包含消息属性、来源和内容
                     wxlog.debug(f"[{msg.attr}]获取到新消息：{who} - {msg.content}")
+                    
+                    # 通过线程池异步提交回调任务，避免阻塞监听线程
+                    # _safe_callback 会捕获回调执行中的异常，防止单个回调失败影响整体监听
                     self._excutor.submit(self._safe_callback, callback, msg, chat)
 
     @property

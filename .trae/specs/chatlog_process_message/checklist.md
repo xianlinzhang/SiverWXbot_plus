@@ -1,0 +1,12 @@
+- [x] Checkpoint 1: `chatlog_process_message` 方法已在 `wxbot_core.py` 中正确定义
+- [x] Checkpoint 2: 方法参数包含 `chat_name` 和 `msg_dict`
+- [x] Checkpoint 3: 方法内部调用 `_convert_chatlog_msg` 转换消息
+- [x] Checkpoint 4: 方法实现群聊处理逻辑（关键词回复、AI回复）
+- [x] Checkpoint 5: 方法实现管理员命令处理逻辑（通过代理对象调用 `process_command`）
+- [x] Checkpoint 6: 方法实现私聊 AI 回复逻辑（调用 `_chatlog_send_ai`）
+- [x] Checkpoint 7: 方法使用 `self.wx.SendMsg(who=chat_name, msg=msg)` 发送消息
+- [x] Checkpoint 8: `chatlog_listen_loop` 中不再调用 `_get_verified_subwindow`
+- [x] Checkpoint 9: `chatlog_listen_loop` 中不再调用 `add_chat_to_listen`
+- [x] Checkpoint 10: `chatlog_listen_loop` 中调用 `chatlog_process_message`
+- [x] Checkpoint 11: Python 语法检查通过
+- [x] Checkpoint 12: VS Code 诊断无错误

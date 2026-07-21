@@ -1,0 +1,5 @@
+- [x] Checkpoint 1: `refresh_chatlog_contacts()` 方法存储 userName、nickName、alias、remark 的双向映射
+- [x] Checkpoint 2: `_is_contact_in_listen_list()` 方法支持备注名、微信号、昵称的匹配
+- [x] Checkpoint 3: `chatlog_listen_loop()` 中的 `is_monitored` 判断使用增强的匹配方法
+- [x] Checkpoint 4: Python 语法检查通过
+- [x] Checkpoint 5: 端到端测试通过

@@ -107,7 +107,9 @@ class ChatBox(BaseUISubWnd):
 
     def init(self):
         self.msgbox = self.control.GroupControl(ClassName="mmui::MessageView").ListControl()
+        # 发送消息文字输入框
         self.editbox = self.control.EditControl(ClassName="mmui::ChatInputField")
+        # 发送消息按钮
         self.sendbtn = self.control.ButtonControl(Name=self._lang('发送(S)'))
         self.tools = self.control.ToolBarControl()
         self._empty = False
@@ -154,9 +156,7 @@ class ChatBox(BaseUISubWnd):
             self._activate_editbox()
             
             if mode == 'type' and WxParam.ENABLE_HUMANIZATION:
-                human_type_text(content, self.editbox,
-                               min_interval=WxParam.KEY_INTERVAL_MIN,
-                               max_interval=WxParam.KEY_INTERVAL_MAX)
+                human_type_text(content, self.editbox,min_interval=WxParam.KEY_INTERVAL_MIN,max_interval=WxParam.KEY_INTERVAL_MAX)
             else:
                 if WxParam.ENABLE_HUMANIZATION:
                     human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
@@ -188,9 +188,7 @@ class ChatBox(BaseUISubWnd):
             self._activate_editbox()
 
             if WxParam.ENABLE_HUMANIZATION:
-                human_click(self.sendbtn,
-                           min_delay=WxParam.CLICK_DELAY_MIN,
-                           max_delay=WxParam.CLICK_DELAY_MAX)
+                human_click(self.sendbtn,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
             else:
                 self.sendbtn.Click()
             

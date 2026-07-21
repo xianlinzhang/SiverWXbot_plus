@@ -1,0 +1,5 @@
+- [x] Checkpoint 1: 当 `chatlog_listen_switch=True` 时，`init_wx_listeners()` 方法跳过 `wx.AddListenChat()` 调用
+- [x] Checkpoint 2: 当 `chatlog_listen_switch=True` 且 Chatlog 服务可用时，调用 `wx.StopListening()` 停止 UI 监听线程
+- [x] Checkpoint 3: 当 `chatlog_listen_switch=False` 时，`init_wx_listeners()` 正常注册所有监听器
+- [x] Checkpoint 4: Python 语法检查通过
+- [x] Checkpoint 5: 端到端测试通过

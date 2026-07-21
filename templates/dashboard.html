@@ -1528,6 +1528,56 @@ body.mobile-nav-open { overflow: hidden; }
     </div>
   </div>
 
+  <div class="col-lg-6 mb-4">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-activity"></i><h5>Chatlog 监听模式</h5><span class="desc">使用 Chatlog HTTP API 替代 UI 自动化监听</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chatlog_listen_switch" name="chatlog_listen_switch" {% if config.get('chatlog_listen_switch', False) %}checked{% endif %}>
+        <label for="chatlog_listen_switch">启用 Chatlog 监听</label>
+        <span class="switch-desc">开启后使用 Chatlog API 获取消息，替代 wxautox4 回调监听</span>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="chatlog_url">Chatlog 服务地址</label>
+        <input type="text" class="form-control" id="chatlog_url" name="chatlog_url" value="{{ config.get('chatlog_url', 'http://127.0.0.1:5030') }}" placeholder="http://127.0.0.1:5030">
+        <div class="cfg-hint">Chatlog 插件的 HTTP API 地址</div>
+      </div>
+      <div class="row g-3" style="margin-bottom:10px;">
+        <div class="col-6">
+          <label class="cfg-label" for="chatlog_polling_interval">轮询间隔（秒）</label>
+          <input type="number" class="form-control" id="chatlog_polling_interval" min="1" max="60"
+                 value="{{ config.get('chatlog_polling_interval', 2) }}" placeholder="2">
+          <div class="cfg-hint">每几秒轮询一次新消息</div>
+        </div>
+        <div class="col-6">
+          <label class="cfg-label" for="chatlog_request_timeout">请求超时（秒）</label>
+          <input type="number" class="form-control" id="chatlog_request_timeout" min="1" max="30"
+                 value="{{ config.get('chatlog_request_timeout', 5) }}" placeholder="5">
+          <div class="cfg-hint">单次请求超时时间</div>
+        </div>
+      </div>
+      <hr>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chatlog_context_switch" name="chatlog_context_switch" {% if config.get('chatlog_context_switch', False) %}checked{% endif %}>
+        <label for="chatlog_context_switch">启用上下文增强</label>
+        <span class="switch-desc">合并 Chatlog 历史消息与 MemoryManager 记忆，增强 AI 回复上下文</span>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="chatlog_context_count">上下文消息数</label>
+        <input type="number" class="form-control" id="chatlog_context_count" min="10" max="500"
+               value="{{ config.get('chatlog_context_count', 50) }}" placeholder="50">
+        <div class="cfg-hint">从 Chatlog 获取的历史消息数量</div>
+      </div>
+      <div style="padding:9px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;color:#92400e;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-lightbulb" style="color:#d97706;margin-right:4px;"></i>
+        <strong>注意事项：</strong><br>
+        - 需要先安装并运行 Chatlog 微信插件（https://github.com/LC044/WeChatMsg）<br>
+        - 开启监听模式后，wxautox4 的消息回调将被禁用<br>
+        - 服务不可达时将自动回退到 UI 监听模式<br>
+        - 建议配合 MemoryManager 使用，以获得最佳上下文效果
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Tab: Friend ===== -->
   <div class="config-panel" id="tab-friend">
     <div class="cfg-card">
@@ -3744,6 +3794,12 @@ $(function(){
       group_split_reply_switch:$('#group_split_reply_switch').is(':checked'),
       group_split_max_chars:Math.max(1,parseInt($('#group_split_max_chars').val())||100),
       group_split_max_count:Math.max(1,parseInt($('#group_split_max_count').val())||4),
+      chatlog_listen_switch:$('#chatlog_listen_switch').is(':checked'),
+      chatlog_url:$('#chatlog_url').val().trim()||'http://127.0.0.1:5030',
+      chatlog_polling_interval:Math.max(1,parseInt($('#chatlog_polling_interval').val())||2),
+      chatlog_request_timeout:Math.max(1,parseInt($('#chatlog_request_timeout').val())||5),
+      chatlog_context_switch:$('#chatlog_context_switch').is(':checked'),
+      chatlog_context_count:Math.max(10,parseInt($('#chatlog_context_count').val())||50),
       siver_panel_enabled:$('#siver_panel_enabled').is(':checked'),
       siver_panel_activation_code:$('#siver_panel_activation_code').val().trim(),
       siver_panel_slug:normalizeSiverPanelSlug($('#siver_panel_slug').val()),
