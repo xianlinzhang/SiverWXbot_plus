@@ -741,6 +741,7 @@ def dashboard():
     config.setdefault('chatlog_request_timeout', 5)       # Chatlog 请求超时（秒）
     config.setdefault('chatlog_context_switch', False)    # Chatlog 上下文增强开关
     config.setdefault('chatlog_context_count', 50)        # Chatlog 上下文消息数
+    config.setdefault('chatlog_reply_delay', 60)          # Chatlog 消息回复延迟（秒）
 
     force_admin_change_required = is_force_admin_change_required()
     return render_template(

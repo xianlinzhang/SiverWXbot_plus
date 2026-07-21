@@ -386,6 +386,7 @@ class WXBotConfig:
                     "chatlog_polling_interval": 3,
                     "chatlog_context_count": 20,
                     "chatlog_request_timeout": 5,
+                    "chatlog_reply_delay": 60,
                 }
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(base_config, f, ensure_ascii=False, indent=4)
@@ -682,6 +683,7 @@ class WXBotConfig:
             'chatlog_polling_interval': 3,
             'chatlog_context_count': 20,
             'chatlog_request_timeout': 5,
+            'chatlog_reply_delay': 0,
         }
         _chatlog_needs_save = any(k not in self.config for k in _chatlog_defaults)
         for k, v in _chatlog_defaults.items():
@@ -696,6 +698,7 @@ class WXBotConfig:
         self.chatlog_polling_interval = max(1, int(self.config.get('chatlog_polling_interval', 3)))
         self.chatlog_context_count = max(1, int(self.config.get('chatlog_context_count', 20)))
         self.chatlog_request_timeout = max(1, int(self.config.get('chatlog_request_timeout', 5)))
+        self.chatlog_reply_delay = int(self.config.get('chatlog_reply_delay', 0))
 
         log(message="全局配置更新完成")
 
@@ -3389,7 +3392,7 @@ class WXBot:
         try:
             session_result = self.chatlog_client.get_session(
                 has_unread=1,
-                ignore_usernames="brandsessionholder,gh_edac0ec6a0ba,newsapp,gh_b6f1d17d2ffc,gh_315e955abdf5,brandservicesessionholder,notifymessage"
+                ignore_usernames="brandsessionholder,gh_edac0ec6a0ba,newsapp,gh_b6f1d17d2ffc,gh_315e955abdf5,brandservicesessionholder,notifymessage,gh_dbc6691e1b64"
             )
             sessions = session_result.get('items', [])
             
@@ -3399,14 +3402,9 @@ class WXBot:
             for session in sessions:
                 # 获取会话名称，优先使用昵称，其次使用用户名
                 session_wxid = session.get('nickName', '') or session.get('userName', '')
-                # 获取会话未读消息数量
-                session_unread_count = session.get('UnreadCount', 0)
+                
                 # 获取会话最后消息时间
                 session_nTime = session.get('nTime', '')
-            
-                if session_wxid not in self.chatlog_contact_map:
-                    log(message=f"Chatlog 监听 {session_wxid} 不在用户列表里")
-                    continue
 
                 contact = self.chatlog_contact_map[session_wxid]
                 wxid = contact.get('userName', '')  # 微信内部 ID
@@ -3419,6 +3417,23 @@ class WXBot:
                 
                 # 记录日志，方便调试和监控
                 log(message=f"chatlog_listen_loop 监听 {chat_name} 有 {UnreadCount} 未读消息")
+
+                # 检查会话最后消息时间是否满足延迟要求
+                reply_delay = self.config.chatlog_reply_delay
+                if session_nTime and reply_delay > 0:
+                    try:
+                        msg_time = datetime.fromisoformat(session_nTime.replace('Z', '+00:00'))
+                        now = datetime.now(msg_time.tzinfo) if msg_time.tzinfo else datetime.now()
+                        time_diff = (now - msg_time).total_seconds()
+                        if time_diff < reply_delay:
+                            log(message=f"Chatlog 会话 [{session_wxid}] 最后消息时间 {session_nTime}，距当前仅 {time_diff:.1f} 秒，未达到回复延迟 {reply_delay} 秒，跳过")
+                            continue
+                    except Exception as e:
+                        log(level="WARNING", message=f"Chatlog 解析会话时间失败 [{session_wxid}]: {e}")
+            
+                if session_wxid not in self.chatlog_contact_map:
+                    log(message=f"Chatlog 监听 {session_wxid} 不在用户列表里")
+                    continue
                 
                 # 跳过没有名称的会话
                 if not chat_name:

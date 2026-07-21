@@ -1555,6 +1555,12 @@ body.mobile-nav-open { overflow: hidden; }
           <div class="cfg-hint">单次请求超时时间</div>
         </div>
       </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="chatlog_reply_delay">消息回复延迟（秒）</label>
+        <input type="number" class="form-control" id="chatlog_reply_delay" min="0" max="300"
+               value="{{ config.get('chatlog_reply_delay', 0) }}" placeholder="0">
+        <div class="cfg-hint">消息发送时间与当前时间的差值，只有超过该时间的消息才会自动回复。设为0则立即回复。</div>
+      </div>
       <hr>
       <div class="switch-row">
         <input class="form-check-input" type="checkbox" id="chatlog_context_switch" name="chatlog_context_switch" {% if config.get('chatlog_context_switch', False) %}checked{% endif %}>
@@ -3800,6 +3806,7 @@ $(function(){
       chatlog_request_timeout:Math.max(1,parseInt($('#chatlog_request_timeout').val())||5),
       chatlog_context_switch:$('#chatlog_context_switch').is(':checked'),
       chatlog_context_count:Math.max(10,parseInt($('#chatlog_context_count').val())||50),
+      chatlog_reply_delay:Math.max(0,parseInt($('#chatlog_reply_delay').val())||60),
       siver_panel_enabled:$('#siver_panel_enabled').is(':checked'),
       siver_panel_activation_code:$('#siver_panel_activation_code').val().trim(),
       siver_panel_slug:normalizeSiverPanelSlug($('#siver_panel_slug').val()),
