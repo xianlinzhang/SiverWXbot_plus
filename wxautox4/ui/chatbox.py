@@ -39,6 +39,8 @@ class ChatBox(BaseUISubWnd):
         self.control: uia.Control = control
         self.root = parent
         self.parent = parent  # `wx` or `chat`
+        self._last_sent_content = None
+        self._last_sent_time = 0
         self.init()
 
     def _lang(self, text: str):
@@ -140,64 +142,121 @@ class ChatBox(BaseUISubWnd):
         Returns:
             WxResponse: 发送结果
         """
+        # 幂等性保护：3秒内发送相同内容直接返回成功
+        now = time.time()
+        if self._last_sent_content == content and now - self._last_sent_time < 3:
+            return WxResponse.success(f"success (idempotent)")
+        
+        # 确保聊天窗口可见
         self._show()
         
+        # 自动选择输入模式：
+        # 如果启用人性化且消息长度小于阈值，使用逐字输入（更像真人操作）
+        # 否则使用剪贴板粘贴（速度更快）
         if mode is None:
             if WxParam.ENABLE_HUMANIZATION and len(content) < WxParam.SHORT_MESSAGE_THRESHOLD:
                 mode = 'type'
             else:
                 mode = 'paste'
         
+        # 第一步：将消息内容输入到输入框
+        # 设置超时时间为10秒，防止无限循环
         t0 = time.time()
         while True:
+            # 检查是否超时
             if time.time() - t0 > 10:
                 return WxResponse.failure(f'Timeout --> {self.who} - {content}')
             
+            # 激活输入框，确保输入焦点在输入框上
             self._activate_editbox()
             
+            # 根据选择的模式输入内容
             if mode == 'type' and WxParam.ENABLE_HUMANIZATION:
                 human_type_text(content, self.editbox,min_interval=WxParam.KEY_INTERVAL_MIN,max_interval=WxParam.KEY_INTERVAL_MAX)
             else:
+                # 剪贴板粘贴模式
+                # 人性化延迟，模拟真人操作间隔
                 if WxParam.ENABLE_HUMANIZATION:
                     human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
                 
+                # 将内容复制到剪贴板
                 SetClipboardText(content)
                 
+                # 人性化延迟
                 if WxParam.ENABLE_HUMANIZATION:
                     human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
                 
+                # 使用 Ctrl+V 粘贴
                 self.editbox.SendKeys('{Ctrl}v')
             
+            # 检查输入框是否有内容（移除特殊字符后判断）
             if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
-                break
+                break  # 输入成功，跳出循环
             
+            # 如果是粘贴模式且首次粘贴失败，尝试其他粘贴方式
             if mode == 'paste':
+                # 再次尝试 Ctrl+V 粘贴
                 self.editbox.SendKeys('{Ctrl}v')
                 if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
                     break
+                
+                # 尝试右键菜单粘贴
                 self.editbox.RightClick()
                 menu = Menu(self)
                 menu.select('粘贴')
                 if self.editbox.GetValuePattern().Value.replace('￼', '').strip():
                     break
         
+        # 第二步：点击发送按钮发送消息
+        # 设置超时时间为10秒
         t0 = time.time()
+        send_attempts = 0
         while self.editbox.GetValuePattern().Value:
+            # 检查是否超时
             if time.time() - t0 > 10:
                 return WxResponse.failure(f'Timeout --> {self.who} - {content}')
+            
+            # 最多尝试发送2次，避免重复发送
+            if send_attempts >= 2:
+                # 多次尝试后仍未清空，可能已发送成功但UI未更新
+                return WxResponse.success(f"success (max attempts)")
+            
+            # 确保输入框仍然处于激活状态
             self._activate_editbox()
 
+            # 点击发送按钮
             if WxParam.ENABLE_HUMANIZATION:
-                human_click(self.sendbtn,min_delay=WxParam.CLICK_DELAY_MIN,max_delay=WxParam.CLICK_DELAY_MAX)
+                # 人性化点击（有随机延迟）
+                human_click(self.sendbtn,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
             else:
+                # 直接点击
                 self.sendbtn.Click()
             
-            if not self.editbox.GetValuePattern().Value:
+            send_attempts += 1
+            
+            # 发送后等待微信UI响应
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(0.2, 0.5)
+            else:
+                time.sleep(0.2)
+            
+            # 检查发送是否成功
+            current_value = self.editbox.GetValuePattern().Value
+            if not current_value:
+                # 输入框为空，发送成功
+                self._last_sent_content = content
+                self._last_sent_time = time.time()
                 return WxResponse.success(f"success")
-            elif not self.editbox.GetValuePattern().Value.replace('￼', '').strip():
-                if WxParam.ENABLE_HUMANIZATION:
-                    human_sleep(0.2, 0.5)
-                return self.send_text(content, mode)
+            elif not current_value.replace('￼', '').strip():
+                # 输入框只有特殊字符（可能是发送后的残留状态），等待后再次检查
+                time.sleep(0.3)
+                if not self.editbox.GetValuePattern().Value.replace('￼', '').strip():
+                    # 仍然只有特殊字符，视为发送成功
+                    self._last_sent_content = content
+                    self._last_sent_time = time.time()
+                    return WxResponse.success(f"success")
 
     def send_msg(self, content: str, clear: bool=True, at=None, 
                  mode: Literal['paste', 'type'] = None):
