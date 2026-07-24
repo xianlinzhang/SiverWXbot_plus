@@ -19,7 +19,9 @@ from datetime import datetime, timedelta
 import logging
 from functools import wraps
 import threading
-from wxbot_core import CozeAPI, DifyAPI, DusAPI, OpenAIAPI, WXBot, clean_ai_reply_text, version as BOT_VERSION
+
+from core.utils import clean_ai_reply_text
+from wxbot_core import CozeAPI, DifyAPI, DusAPI, OpenAIAPI, WXBot, version as BOT_VERSION
 from logger import log
 import logger
 import pythoncom
