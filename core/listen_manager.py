@@ -13,16 +13,23 @@ class ListenManager:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
+        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def listen_mode(self):
         """
         普通监听模式（白名单模式）：
         获取所有监听窗口的最新消息并逐一处理。
         """
-        messages_dict = self.bot.wx.GetListenMessage()
-        for chat in messages_dict:
-            for message in messages_dict.get(chat, []):
-                self.bot.process_message(chat, message)
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder="listen_mode")
+            messages_dict = self.bot.wx.GetListenMessage()
+            for chat in messages_dict:
+                for message in messages_dict.get(chat, []):
+                    self.bot.process_message(chat, message)
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder="listen_mode")
 
     def ALLListen_mode(self, last_time, timeout=10):
         """
@@ -151,9 +158,15 @@ class ListenManager:
         if self.config.chatlog_listen_switch:
             return []
         
-        AllMessage = self.bot.wx.GetAllMessage()
-        new_msg = self.new_msg_get_plus(AllMessage)
-        return new_msg
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder="next_message_handle")
+            AllMessage = self.bot.wx.GetAllMessage()
+            new_msg = self.new_msg_get_plus(AllMessage)
+            return new_msg
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder="next_message_handle")
 
     def add_chat_to_listen(self, chat):
         """
@@ -285,23 +298,6 @@ class ListenManager:
         """判断指定会话是否在监听列表中。"""
         return chat_name in listen_list
 
-    def wxautox_activate_check(self):
-        """
-        校验 wxautox 授权状态。
-
-        :return: True 表示已激活，False 表示未激活
-        """
-        if self.bot.wx is None:
-            self.bot.wx = WeChat()
-        try:
-            result = check_license()
-            if result:
-                return True
-            return False
-        except Exception as e:
-            log(level="ERROR", message=f"wxautox授权校验出错: {e}")
-            return False
-
     def init_wx_listeners(self):
         """
         初始化微信监听器：
@@ -391,8 +387,9 @@ class ListenManager:
         :return: True 表示在线，False 表示离线
         """
         try:
-            if self.wx and self.bot.wx.CheckWeChat():
+            if self.bot.wx and self.bot.wx.IsOnline():
                 return True
             return False
-        except Exception:
+        except Exception as e:
+            log(f"check_wechat_window 错误：{e}")
             return False

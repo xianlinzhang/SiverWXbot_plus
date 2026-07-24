@@ -123,6 +123,15 @@ class WXBotConfig:
         self.chatlog_context_count = 20                                # Chatlog 上下文拉取条数
         self.chatlog_request_timeout = 5                               # Chatlog 请求超时时间（秒）
 
+        # ---------- 消息存储配置 ----------
+        self.chat_reply_confirm_switch = False                         # 私聊回复确认开关
+        self.chat_reply_confirm_wait_timeout = 300                     # 确认等待超时时间（秒）
+        self.message_store_max_count = 1000                            # 单会话最大存储消息数
+
+        # ---------- 微信界面操作锁配置 ----------
+        self.wx_lock_enabled = True                                    # 微信界面操作锁开关
+        self.wx_lock_timeout = 300                                     # 锁自动超时时间（秒）
+
         # 初始化时自动加载配置并同步到属性
         self.load_config()
         self.update_global_config()
@@ -255,6 +264,11 @@ class WXBotConfig:
                     "chatlog_context_count": 20,
                     "chatlog_request_timeout": 5,
                     "chatlog_reply_delay": 60,
+                    "chat_reply_confirm_switch": False,
+                    "chat_reply_confirm_wait_timeout": 300,
+                    "message_store_max_count": 1000,
+                    "wx_lock_enabled": True,
+                    "wx_lock_timeout": 300,
                 }
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(base_config, f, ensure_ascii=False, indent=4)
@@ -566,6 +580,15 @@ class WXBotConfig:
         self.chatlog_context_count = max(1, int(self.config.get('chatlog_context_count', 20)))
         self.chatlog_request_timeout = max(1, int(self.config.get('chatlog_request_timeout', 5)))
         self.chatlog_reply_delay = int(self.config.get('chatlog_reply_delay', 0))
+
+        # 消息存储配置
+        self.chat_reply_confirm_switch = bool(self.config.get('chat_reply_confirm_switch', False))
+        self.chat_reply_confirm_wait_timeout = max(60, int(self.config.get('chat_reply_confirm_wait_timeout', 300)))
+        self.message_store_max_count = max(100, int(self.config.get('message_store_max_count', 1000)))
+
+        # 微信界面操作锁配置
+        self.wx_lock_enabled = bool(self.config.get('wx_lock_enabled', True))
+        self.wx_lock_timeout = max(30, int(self.config.get('wx_lock_timeout', 300)))
 
         log(message="全局配置更新完成")
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Siver微信机器人 siver_wxbot - 面向对象版本 - wxautox4版本
 # 作者：https://www.siver.top
+from wxautox4.utils.useful import check_license
 
 version = "V4.7.27"
 version_log = "V4.7.27 - 优化远程访问、关闭SESSION_COOKIE_HTTPONLY方便内外网访问、优化面板接口测试"
@@ -42,6 +43,8 @@ from core.command_handler import CommandHandler
 from core.listen_manager import ListenManager
 from core.chatlog_manager import ChatlogManager
 from core.wx_utils import WXUtils
+from core.message_store import MessageStore
+from core.wx_lock import WXLock
 
 # ============================================================
 # wxautox 全局参数配置
@@ -136,6 +139,12 @@ class WXBot:
         # 微信辅助工具
         self.wx_utils = WXUtils(self)
 
+        # 消息存储模块
+        self.message_store = MessageStore(self.config)
+
+        # 微信界面操作锁
+        self.wx_lock = WXLock(self.config)
+
     def _init_api(self):
         """根据配置中的 api_sdk 字段实例化对应的 AI 接口对象（默认接口）"""
         sdk = self.config.api_sdk
@@ -205,7 +214,7 @@ class WXBot:
         """合并 Chatlog 历史消息增强上下文（委托给 ChatlogManager）"""
         return self.chatlog_manager._enrich_context_with_chatlog(chat_name, base_history)
 
-# ----------------------------------------------------------
+    # ----------------------------------------------------------
     # Chatlog 轮询监听模式（委托给 ChatlogManager）
     # ----------------------------------------------------------
 
@@ -451,10 +460,6 @@ class WXBot:
     # 微信初始化与状态检查（委托给 ListenManager）
     # ----------------------------------------------------------
 
-    def wxautox_activate_check(self):
-        """校验 wxautox 授权状态（委托给 ListenManager）"""
-        return self.listen_manager.wxautox_activate_check()
-
     def init_wx_listeners(self):
         """初始化微信监听器（委托给 ListenManager）"""
         return self.listen_manager.init_wx_listeners()
@@ -532,7 +537,7 @@ class WXBot:
         except Exception as e:
             log(level="ERROR", message=f"发送错误邮件失败: {e}")
 
-# ----------------------------------------------------------
+    # ----------------------------------------------------------
     # 机器人生命周期
     # ----------------------------------------------------------
 
@@ -622,15 +627,7 @@ class WXBot:
         - 进入主循环，依次执行：离线检测、新好友检测、全局监听/定时任务
         """
         # self.key_pass(2025, 6, 20, 0, 0, 0)  # 打包保护锁（按需启用）
-        log(message=f"wxbot\n版本: wxbot_{self.ver}\n作者: https://www.siver.top\n")
-
-        # 激活授权校验
-        if self.wxautox_activate_check():
-            log(message="wxautox已激活")
-        else:
-            log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
-            log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
-            return False
+        log(message=f"wxbot\n版本: wxbot_{self.ver}\n")
 
         # 初始化微信监听器
         try:

@@ -12,6 +12,8 @@ class CommandHandler:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
+        self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
+        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def process_command(self, chat, message):
         """
@@ -186,6 +188,27 @@ class CommandHandler:
                 f'接口失败只回复一次：{"是" if self.config.api_error_reply_once else "否"}\n'
                 '[/清除计数 昵称] 清除指定用户的回复计数与通知状态'
             )
+        elif content == "/消息存储指令":
+            result = chat.SendMsg(
+                '--- 消息存储 ---\n'
+                '[/消息存储状态] 查看消息存储配置及统计\n'
+                '[/开启私聊回复确认] / [/关闭私聊回复确认]\n'
+                '[/待确认列表] 查看所有待确认的回复\n'
+                '[/确认回复 ID] 确认并发送指定待确认回复\n'
+                '[/取消回复 ID] 取消指定待确认回复\n'
+                '[/查看未读消息] 查看所有未读消息\n'
+                '[/标记已读 ID] 将指定消息标记为已读\n'
+                '[/标记未读 ID] 将指定消息标记为未读'
+            )
+        elif content == "/微信锁指令":
+            result = chat.SendMsg(
+                '--- 微信界面操作锁 ---\n'
+                '[/微信锁状态] 查看微信锁当前状态\n'
+                '[/占用微信锁] 手动占用微信锁\n'
+                '[/释放微信锁] 手动释放微信锁\n'
+                '[/强制释放微信锁] 强制释放微信锁（无视占用者）\n'
+                '[/开启微信锁] / [/关闭微信锁]'
+            )
         elif content == "/状态":
             result = self._build_status_msg(chat, message)
         elif content == "/关键词状态":
@@ -317,6 +340,40 @@ class CommandHandler:
                 result = chat.SendMsg(f"已清除 {target} 的回复计数与通知状态")
             else:
                 result = chat.SendMsg(f"未找到 {target} 的计数记录（可能尚未触发过回复）")
+        elif content == "/消息存储状态":
+            result = self.handle_message_store_status(chat, message)
+        elif content == "/开启私聊回复确认":
+            self.config.set_config('chat_reply_confirm_switch', True)
+            result = chat.SendMsg("私聊回复确认已开启")
+        elif content == "/关闭私聊回复确认":
+            self.config.set_config('chat_reply_confirm_switch', False)
+            result = chat.SendMsg("私聊回复确认已关闭")
+        elif content == "/待确认列表":
+            result = self.handle_pending_confirm_list(chat, message)
+        elif content.startswith("/确认回复"):
+            result = self.handle_confirm_reply(chat, message)
+        elif content.startswith("/取消回复"):
+            result = self.handle_cancel_reply(chat, message)
+        elif content == "/查看未读消息":
+            result = self.handle_unread_messages(chat, message)
+        elif content.startswith("/标记已读"):
+            result = self.handle_mark_read(chat, message)
+        elif content.startswith("/标记未读"):
+            result = self.handle_mark_unread(chat, message)
+        elif content == "/微信锁状态":
+            result = self.handle_wx_lock_status(chat, message)
+        elif content == "/占用微信锁":
+            result = self.handle_acquire_wx_lock(chat, message)
+        elif content == "/释放微信锁":
+            result = self.handle_release_wx_lock(chat, message)
+        elif content == "/强制释放微信锁":
+            result = self.handle_force_release_wx_lock(chat, message)
+        elif content == "/开启微信锁":
+            self.config.set_config('wx_lock_enabled', True)
+            result = chat.SendMsg("微信界面操作锁已开启")
+        elif content == "/关闭微信锁":
+            self.config.set_config('wx_lock_enabled', False)
+            result = chat.SendMsg("微信界面操作锁已关闭")
         else:
             if message.attr != "self":
                 result = self.bot.wx_send_ai(chat, message)
@@ -631,6 +688,188 @@ class CommandHandler:
         ] + [f"  · {m}" for m in msgs]
         return chat.SendMsg('\n'.join(lines))
 
+    def handle_message_store_status(self, chat, message):
+        """处理 /消息存储状态 指令：返回消息存储配置及统计"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        stats = self.message_store.get_stats()
+        confirm_sw = "开启" if self.config.chat_reply_confirm_switch else "关闭"
+        
+        lines = [
+            "--- 消息存储状态 ---",
+            f"私聊回复确认：{confirm_sw}",
+            f"确认等待超时：{self.config.chat_reply_confirm_wait_timeout}秒",
+            f"单会话最大存储：{self.config.message_store_max_count}条",
+            f"总消息数：{stats.get('total_count', 0)}",
+            f"会话数：{stats.get('chat_count', 0)}",
+            f"待确认回复：{stats.get('pending_count', 0)}",
+            f"未读消息：{stats.get('unread_count', 0)}",
+        ]
+        return chat.SendMsg('\n'.join(lines))
+
+    def handle_pending_confirm_list(self, chat, message):
+        """处理 /待确认列表 指令：查看所有待确认的回复"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        pending = self.message_store.get_pending_confirms()
+        if not pending:
+            return chat.SendMsg("暂无待确认的回复")
+        
+        lines = ["--- 待确认回复列表 ---"]
+        for p in pending[:10]:
+            lines.append(f"ID: {p.get('id', '')}")
+            lines.append(f"  会话: {p.get('chat_name', '')}")
+            lines.append(f"  发送者: {p.get('sender', '')}")
+            lines.append(f"  消息: {p.get('content', '')[:50]}...")
+            lines.append(f"  待发送回复: {p.get('pending_reply', '')[:50]}...")
+            lines.append(f"  等待时间: {p.get('pending_time', '')}")
+            lines.append("")
+        
+        if len(pending) > 10:
+            lines.append(f"... 还有 {len(pending) - 10} 条待确认回复")
+        
+        return chat.SendMsg('\n'.join(lines))
+
+    def handle_confirm_reply(self, chat, message):
+        """处理 /确认回复 ID 指令：确认并发送指定待确认回复"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        msg_id = re.sub("/确认回复", "", message.content).strip()
+        if not msg_id:
+            return chat.SendMsg("请提供消息ID，如：/确认回复 abc123")
+        
+        result = self.message_store.confirm_reply(msg_id)
+        if result:
+            return chat.SendMsg(f"已确认并发送消息 {msg_id} 的回复")
+        else:
+            return chat.SendMsg(f"未找到消息 {msg_id} 或该消息无需确认")
+
+    def handle_cancel_reply(self, chat, message):
+        """处理 /取消回复 ID 指令：取消指定待确认回复"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        msg_id = re.sub("/取消回复", "", message.content).strip()
+        if not msg_id:
+            return chat.SendMsg("请提供消息ID，如：/取消回复 abc123")
+        
+        result = self.message_store.cancel_reply(msg_id)
+        if result:
+            return chat.SendMsg(f"已取消消息 {msg_id} 的待确认回复")
+        else:
+            return chat.SendMsg(f"未找到消息 {msg_id} 或该消息无需确认")
+
+    def handle_unread_messages(self, chat, message):
+        """处理 /查看未读消息 指令：查看所有未读消息"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        unread = self.message_store.get_unread_messages()
+        if not unread:
+            return chat.SendMsg("暂无未读消息")
+        
+        lines = ["--- 未读消息列表 ---"]
+        for msg in unread[:10]:
+            lines.append(f"ID: {msg.get('id', '')}")
+            lines.append(f"  会话: {msg.get('chat_name', '')}")
+            lines.append(f"  发送者: {msg.get('sender', '')}")
+            lines.append(f"  消息: {msg.get('content', '')[:50]}...")
+            lines.append(f"  时间: {msg.get('message_time', '')}")
+            lines.append("")
+        
+        if len(unread) > 10:
+            lines.append(f"... 还有 {len(unread) - 10} 条未读消息")
+        
+        return chat.SendMsg('\n'.join(lines))
+
+    def handle_mark_read(self, chat, message):
+        """处理 /标记已读 ID 指令：将指定消息标记为已读"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        msg_id = re.sub("/标记已读", "", message.content).strip()
+        if not msg_id:
+            return chat.SendMsg("请提供消息ID，如：/标记已读 abc123")
+        
+        result = self.message_store.set_read(msg_id)
+        if result:
+            return chat.SendMsg(f"消息 {msg_id} 已标记为已读")
+        else:
+            return chat.SendMsg(f"未找到消息 {msg_id}")
+
+    def handle_mark_unread(self, chat, message):
+        """处理 /标记未读 ID 指令：将指定消息标记为未读"""
+        if not self.message_store:
+            return chat.SendMsg("消息存储功能未初始化")
+        
+        msg_id = re.sub("/标记未读", "", message.content).strip()
+        if not msg_id:
+            return chat.SendMsg("请提供消息ID，如：/标记未读 abc123")
+        
+        result = self.message_store.set_unread(msg_id)
+        if result:
+            return chat.SendMsg(f"消息 {msg_id} 已标记为未读")
+        else:
+            return chat.SendMsg(f"未找到消息 {msg_id}")
+
+    def handle_wx_lock_status(self, chat, message):
+        """处理 /微信锁状态 指令：查看微信锁当前状态"""
+        if not self.wx_lock:
+            return chat.SendMsg("微信锁功能未初始化")
+        
+        status = self.wx_lock.get_status()
+        enabled = "开启" if self.config.wx_lock_enabled else "关闭"
+        
+        lines = [
+            "--- 微信界面操作锁状态 ---",
+            f"锁开关：{enabled}",
+            f"锁状态：{'已占用' if status.get('held', False) else '空闲'}",
+        ]
+        
+        if status.get('held', False):
+            lines.append(f"占用者：{status.get('holder', '未知')}")
+            lines.append(f"占用时间：{status.get('hold_time', '未知')}")
+            lines.append(f"已占用：{status.get('held_duration', '0秒')}")
+        
+        lines.append(f"超时时间：{self.config.wx_lock_timeout}秒")
+        return chat.SendMsg('\n'.join(lines))
+
+    def handle_acquire_wx_lock(self, chat, message):
+        """处理 /占用微信锁 指令：手动占用微信锁"""
+        if not self.wx_lock:
+            return chat.SendMsg("微信锁功能未初始化")
+        
+        if not self.config.wx_lock_enabled:
+            return chat.SendMsg("微信锁已关闭，请先开启")
+        
+        result = self.wx_lock.acquire(holder="manual", timeout=5)
+        if result:
+            return chat.SendMsg("微信锁已成功占用")
+        else:
+            return chat.SendMsg("微信锁获取失败，可能被其他任务占用中")
+
+    def handle_release_wx_lock(self, chat, message):
+        """处理 /释放微信锁 指令：手动释放微信锁"""
+        if not self.wx_lock:
+            return chat.SendMsg("微信锁功能未初始化")
+        
+        result = self.wx_lock.release(holder="manual")
+        if result:
+            return chat.SendMsg("微信锁已成功释放")
+        else:
+            return chat.SendMsg("微信锁未被占用或占用者不匹配")
+
+    def handle_force_release_wx_lock(self, chat, message):
+        """处理 /强制释放微信锁 指令：强制释放微信锁"""
+        if not self.wx_lock:
+            return chat.SendMsg("微信锁功能未初始化")
+        
+        self.wx_lock.force_release()
+        return chat.SendMsg("微信锁已强制释放")
+
     def send_command_list(self, chat):
         """发送全量指令帮助列表"""
         commands = (
@@ -648,6 +887,8 @@ class CommandHandler:
             '/新好友指令\n'
             '/接口指令\n'
             '/计数器指令\n'
+            '/消息存储指令\n'
+            '/微信锁指令\n'
             '作者:https://www.siver.top'
         )
         return chat.SendMsg(commands)

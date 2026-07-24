@@ -16,6 +16,8 @@ class MessageHandler:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
+        self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
+        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def _get_chat_api(self, user_name):
         """获取私聊用户对应的 AI 接口实例（白名单模式查 chat_api_map，否则用默认接口）"""
@@ -157,19 +159,39 @@ class MessageHandler:
                                 self.bot.wx.SendMsg(who=target, msg=message.content)
                         log(message=f"[自定义转发] {chat.who} → {target}（规则类型：{rule_type}，附带来源：{forward_with_source}）")
 
-    def _chatlog_send_ai(self, chat_name, message):
+    def _chatlog_send_ai(self, chat_name, message, message_record=None):
         """
         Chatlog 模式下对私聊消息调用 AI 接口并发送回复。
+        集成消息存储和微信界面操作锁。
 
-        :param chat_name: 会话名称（备注名）
-        :param message: 消息对象
-        :return: 发送结果
+        :param chat_name:      会话名称（备注名）
+        :param message:        消息对象
+        :param message_record: 已保存的消息记录（可选，避免重复保存）
+        :return:               发送结果
         """
         result = True
         api_error_reply = False
+        msg_id = None
 
+        if self.message_store and not message_record:
+            message_record = self.message_store.save_message(
+                chat_name=chat_name,
+                sender=message.sender,
+                content=message.content,
+                msg_type=message.type,
+                msg_attr=message.attr,
+                seq=message.seq,
+                message_time=message.time if hasattr(message, 'time') else datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+            )
+            msg_id = message_record.id
+
+        if self.config.chat_reply_confirm_switch and message_record:
+            self.message_store.add_pending_confirm(message_record)
+            log(message=f"Chatlog 私聊 {chat_name} 消息已加入待确认队列，需人工确认后才会回复")
+            return True
+
+        reply = None
         try:
-            reply = None
             is_keyword = False
             if self.config.chat_keyword_switch:
                 for keyword in self.config.keyword_dict:
@@ -181,6 +203,8 @@ class MessageHandler:
             if not is_keyword:
                 if self.config.chat_listen_only:
                     log(message=f"私聊 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
+                    if self.message_store and msg_id:
+                        self.message_store.set_message_status(chat_name, msg_id, "processed")
                     return True
 
                 history = []
@@ -240,13 +264,33 @@ class MessageHandler:
         else:
             parts = [reply]
 
-        for part in parts:
-            self.config.human_delay()
-            if len(part) >= 2000:
-                for segment in self.config.split_long_text(part):
-                    result = self.bot.wx.SendMsg(msg=segment, who=chat_name)
-            else:
-                result = self.bot.wx.SendMsg(msg=part, who=chat_name)
+        send_success = False
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder=f"_chatlog_send_ai_{chat_name}")
+
+            for part in parts:
+                self.config.human_delay()
+                if len(part) >= 2000:
+                    for segment in self.config.split_long_text(part):
+                        result = self.bot.wx.SendMsg(msg=segment, who=chat_name)
+                        send_success = send_success or self.bot.reply_count_store.was_send_success(result)
+                else:
+                    result = self.bot.wx.SendMsg(msg=part, who=chat_name)
+                    send_success = send_success or self.bot.reply_count_store.was_send_success(result)
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder=f"_chatlog_send_ai_{chat_name}")
+
+        if self.message_store and msg_id and send_success:
+            self.message_store.bind_reply(
+                chat_name,
+                msg_id,
+                reply,
+                datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+            )
+        elif self.message_store and msg_id:
+            self.message_store.set_message_status(chat_name, msg_id, "processed")
 
         self.bot.msg_replied_count += 1
         return result
@@ -255,6 +299,7 @@ class MessageHandler:
         """
         wxautox 监听器的消息回调函数。
         每当监听到新消息时由 wxautox 自动调用。
+        集成消息存储和微信界面操作锁。
 
         :param msg:  消息对象（含 type、attr、sender、content 等属性）
         :param chat: 聊天窗口子对象（含 who 等属性）
@@ -270,6 +315,16 @@ class MessageHandler:
                 + f' 发送人：{msg.sender} - 消息：{msg.content}'
             )
             log(message=text)
+
+            if self.message_store:
+                self.message_store.save_message(
+                    chat_name=chat.who,
+                    sender=msg.sender,
+                    content=msg.content,
+                    msg_type=msg.type,
+                    msg_attr=msg.attr,
+                    message_time=message_time,
+                )
 
             if msg.attr == "friend":
                 _is_group = chat.who in self.config.group
@@ -504,20 +559,40 @@ class MessageHandler:
         result = self.wx_send_ai(chat, message)
         return result
 
-    def wx_send_ai(self, chat, message):
+    def wx_send_ai(self, chat, message, message_record=None):
         """
         对私聊消息调用 AI 接口并发送回复。
         支持关键词优先匹配，超过 2000 字时自动分段发送。
+        集成消息存储和微信界面操作锁。
 
-        :param chat:    聊天窗口子对象
-        :param message: 消息对象
-        :return:        发送结果
+        :param chat:           聊天窗口子对象
+        :param message:        消息对象
+        :param message_record: 已保存的消息记录（可选，避免重复保存）
+        :return:               发送结果
         """
         result = True
         user_key = self._get_reply_count_key(chat, message)
+        msg_id = None
+
+        if self.message_store and not message_record:
+            message_record = self.message_store.save_message(
+                chat_name=chat.who,
+                sender=message.sender,
+                content=message.content,
+                msg_type=message.type,
+                msg_attr=message.attr,
+                message_time=datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+            )
+            msg_id = message_record.id
+
+        if self.config.chat_reply_confirm_switch and message_record:
+            self.message_store.add_pending_confirm(message_record)
+            log(message=f"私聊 {chat.who} 消息已加入待确认队列，需人工确认后才会回复")
+            return True
 
         api_error_reply = False
         api_error_should_mark = False
+        reply = None
         try:
             is_keyword = False
             if self.config.chat_keyword_switch:
@@ -529,9 +604,13 @@ class MessageHandler:
             if not is_keyword:
                 if self.config.chat_listen_only:
                     log(message=f"私聊 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
+                    if self.message_store and msg_id:
+                        self.message_store.set_message_status(chat.who, msg_id, "processed")
                     return True
                 limit_handled, limit_result = self._check_chat_max_round_limit(chat, user_key)
                 if limit_handled:
+                    if self.message_store and msg_id:
+                        self.message_store.set_message_status(chat.who, msg_id, "processed")
                     return limit_result
 
                 history = []
@@ -580,6 +659,8 @@ class MessageHandler:
             if self.config.api_error_reply_once and user_key:
                 user_data = self.bot.reply_count_store.get_user(user_key)
                 if user_data.get("api_err_notified"):
+                    if self.message_store and msg_id:
+                        self.message_store.set_message_status(chat.who, msg_id, "processed")
                     return True
                 api_error_should_mark = True
             reply = self.config.api_error_reply
@@ -588,6 +669,8 @@ class MessageHandler:
             if self.config.api_error_reply_once and user_key:
                 user_data = self.bot.reply_count_store.get_user(user_key)
                 if user_data.get("api_err_notified"):
+                    if self.message_store and msg_id:
+                        self.message_store.set_message_status(chat.who, msg_id, "processed")
                     return True
                 api_error_should_mark = True
             reply = self.config.api_error_reply
@@ -601,21 +684,38 @@ class MessageHandler:
             parts = [reply]
 
         send_success = False
-        for part in parts:
-            self.config.human_delay()
-            if len(part) >= 2000:
-                for segment in self.config.split_long_text(part):
-                    result = chat.SendMsg(segment)
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder=f"wx_send_ai_{chat.who}")
+
+            for part in parts:
+                self.config.human_delay()
+                if len(part) >= 2000:
+                    for segment in self.config.split_long_text(part):
+                        result = chat.SendMsg(segment)
+                        send_success = send_success or self.bot.reply_count_store.was_send_success(result)
+                else:
+                    result = chat.SendMsg(part)
                     send_success = send_success or self.bot.reply_count_store.was_send_success(result)
-            else:
-                result = chat.SendMsg(part)
-                send_success = send_success or self.bot.reply_count_store.was_send_success(result)
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder=f"wx_send_ai_{chat.who}")
 
         if send_success and api_error_should_mark:
             self.bot.reply_count_store.mark_api_err_notified(user_key)
 
         if send_success and self.config.chat_max_round_switch and user_key and not api_error_reply:
             self.bot.reply_count_store.increment_ai_count(user_key)
+
+        if self.message_store and msg_id and send_success:
+            self.message_store.bind_reply(
+                chat.who,
+                msg_id,
+                reply,
+                datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+            )
+        elif self.message_store and msg_id:
+            self.message_store.set_message_status(chat.who, msg_id, "processed")
 
         self.bot.msg_replied_count += 1
         return result

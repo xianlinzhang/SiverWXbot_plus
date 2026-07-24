@@ -14,6 +14,7 @@ class WXUtils:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
+        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def find_new_group_friend(self, msg, flag):
         """
@@ -41,17 +42,24 @@ class WXUtils:
         result = True
         log(message=f"{chat.who} 系统消息:" + message.content)
 
-        if "加入群聊" in message.content and random.random() < self.config.group_welcome_random:
-            new_friend = self.find_new_group_friend(message.content, 1)
-            log(message=f"{chat.who} 新群友:" + new_friend)
-            time.sleep(5)
-            result = chat.SendMsg(msg=self.config.group_welcome_msg, at=new_friend)
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder=f"send_group_welcome_{chat.who}")
 
-        elif "加入了群聊" in message.content and random.random() < self.config.group_welcome_random:
-            new_friend = self.find_new_group_friend(message.content, 3)
-            log(message=f"{chat.who} 新群友:" + new_friend)
-            time.sleep(5)
-            result = chat.SendMsg(msg=self.config.group_welcome_msg, at=new_friend)
+            if "加入群聊" in message.content and random.random() < self.config.group_welcome_random:
+                new_friend = self.find_new_group_friend(message.content, 1)
+                log(message=f"{chat.who} 新群友:" + new_friend)
+                time.sleep(5)
+                result = chat.SendMsg(msg=self.config.group_welcome_msg, at=new_friend)
+
+            elif "加入了群聊" in message.content and random.random() < self.config.group_welcome_random:
+                new_friend = self.find_new_group_friend(message.content, 3)
+                log(message=f"{chat.who} 新群友:" + new_friend)
+                time.sleep(5)
+                result = chat.SendMsg(msg=self.config.group_welcome_msg, at=new_friend)
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder=f"send_group_welcome_{chat.who}")
 
         return result
 
@@ -137,30 +145,37 @@ class WXUtils:
         """
         检测并批量通过新好友请求，通过后按需自动发送打招呼消息。
         """
-        NewFriends = self.bot.wx.GetNewFriends(acceptable=True)
-        time.sleep(1)
-        if len(NewFriends) != 0:
-            log(message="以下是新朋友：\n" + str(NewFriends))
-            for new in NewFriends:
-                new_name = self.build_new_friend_remark(new.name)
-                tags = self.config.new_friend_tags if self.config.new_friend_tags else None
-                new.accept(remark=new_name, tags=tags)
-                log(message="已通过" + new_name + "的好友请求")
-                self.bot.wx.SwitchToChat()
-                time.sleep(5)
-                if self.config.new_frien_reply_switch:
-                    for msg in self.config.new_frien_msg:
-                        if self.is_image_path(msg):
-                            self.bot.wx.SendFiles(who=new_name, filepath=msg)
-                        else:
-                            self.bot.wx.SendMsg(who=new_name, msg=msg)
-                        self.config.human_delay()
-                self.bot.wx.ChatWith(who='文件传输助手')
-                time.sleep(1)
-                self.bot.wx.SwitchToContact()
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder="Pass_New_Friends")
+
+            NewFriends = self.bot.wx.GetNewFriends(acceptable=True)
             time.sleep(1)
-        self.bot.wx.SwitchToChat()
-        time.sleep(1)
+            if len(NewFriends) != 0:
+                log(message="以下是新朋友：\n" + str(NewFriends))
+                for new in NewFriends:
+                    new_name = self.build_new_friend_remark(new.name)
+                    tags = self.config.new_friend_tags if self.config.new_friend_tags else None
+                    new.accept(remark=new_name, tags=tags)
+                    log(message="已通过" + new_name + "的好友请求")
+                    self.bot.wx.SwitchToChat()
+                    time.sleep(5)
+                    if self.config.new_frien_reply_switch:
+                        for msg in self.config.new_frien_msg:
+                            if self.is_image_path(msg):
+                                self.bot.wx.SendFiles(who=new_name, filepath=msg)
+                            else:
+                                self.bot.wx.SendMsg(who=new_name, msg=msg)
+                            self.config.human_delay()
+                    self.bot.wx.ChatWith(who='文件传输助手')
+                    time.sleep(1)
+                    self.bot.wx.SwitchToContact()
+                time.sleep(1)
+            self.bot.wx.SwitchToChat()
+            time.sleep(1)
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder="Pass_New_Friends")
 
     def send_scheduled_msg(self, targets, msgs, repeat_type, weekdays, dates, task_id):
         """
@@ -195,27 +210,34 @@ class WXUtils:
             return None
 
         log(message=f"定时消息时间到（{repeat_type}），目标：{targets}，正在发送...")
-        for user in targets:
-            for msg in msgs:
-                log(message=f"正在向 {user} 发送定时消息：{msg}")
-                try:
-                    if self.is_image_path(msg):
-                        result = self.bot.wx.SendFiles(who=user, filepath=msg)
-                    else:
-                        result = self.bot.wx.SendMsg(msg=msg, who=user)
-                    self.config.human_delay()
-                    if not result:
-                        log(level="ERROR", message=f"定时消息发送失败：{result['message']}")
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder=f"send_scheduled_msg_{task_id}")
+
+            for user in targets:
+                for msg in msgs:
+                    log(message=f"正在向 {user} 发送定时消息：{msg}")
+                    try:
+                        if self.is_image_path(msg):
+                            result = self.bot.wx.SendFiles(who=user, filepath=msg)
+                        else:
+                            result = self.bot.wx.SendMsg(msg=msg, who=user)
+                        self.config.human_delay()
+                        if not result:
+                            log(level="ERROR", message=f"定时消息发送失败：{result['message']}")
+                            self.bot.is_err(
+                                self.bot.wx.nickname + f" wxbot定时消息发送失败！",
+                                f"{user} 定时消息发送失败：{result['message']}",
+                            )
+                    except Exception as e:
+                        log(level="ERROR", message=f"定时消息发送失败：{e}")
                         self.bot.is_err(
                             self.bot.wx.nickname + f" wxbot定时消息发送失败！",
-                            f"{user} 定时消息发送失败：{result['message']}",
+                            f"{user} 定时消息发送失败：{e}",
                         )
-                except Exception as e:
-                    log(level="ERROR", message=f"定时消息发送失败：{e}")
-                    self.bot.is_err(
-                        self.bot.wx.nickname + f" wxbot定时消息发送失败！",
-                        f"{user} 定时消息发送失败：{e}",
-                    )
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder=f"send_scheduled_msg_{task_id}")
 
         if repeat_type == 'once':
             for task in self.config.scheduled_msg_list:
@@ -263,6 +285,9 @@ class WXUtils:
 
         log(message=f"定时朋友圈时间到（{repeat_type}），正在发送...")
         try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder=f"send_scheduled_moments_{task_id}")
+
             result = self.bot.wx.SendMoments(text=text, images=images, privacy=privacy, tags=tags)
             log(message=f"定时朋友圈发送成功：{result}")
         except Exception as e:
@@ -271,6 +296,9 @@ class WXUtils:
                 self.bot.wx.nickname + f" wxbot定时朋友圈发送失败！",
                 f"定时朋友圈发送失败：{e}",
             )
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder=f"send_scheduled_moments_{task_id}")
 
         if repeat_type == 'once':
             for task in self.config.scheduled_moments_list:
@@ -285,6 +313,9 @@ class WXUtils:
     def _do_moments_like(self):
         """执行随机朋友圈点赞操作。"""
         try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder="_do_moments_like")
+
             moments = self.bot.wx.GetMoments(count=self.config.moments_like_count)
             if moments:
                 liked_count = 0
@@ -299,12 +330,18 @@ class WXUtils:
                 log(message=f"随机朋友圈点赞完成，共点赞 {liked_count} 条")
         except Exception as e:
             log(level="ERROR", message=f"随机朋友圈点赞出错：{e}")
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder="_do_moments_like")
 
     def _check_random_moments(self):
         """检查是否需要发送随机朋友圈。"""
         now = datetime.now()
         if self.bot._random_moments_state.get('next_time') and now >= self.bot._random_moments_state['next_time']:
             try:
+                if self.wx_lock:
+                    self.wx_lock.acquire(holder="_check_random_moments")
+
                 templates = self.config.random_moments_list
                 if templates:
                     template = random.choice(templates)
@@ -316,6 +353,9 @@ class WXUtils:
                     log(message=f"随机朋友圈发送成功：{result}")
             except Exception as e:
                 log(level="ERROR", message=f"随机朋友圈发送出错：{e}")
+            finally:
+                if self.wx_lock:
+                    self.wx_lock.release(holder="_check_random_moments")
             self.bot._random_moments_state['next_time'] = None
 
         if not self.bot._random_moments_state.get('next_time'):
@@ -331,6 +371,9 @@ class WXUtils:
         for target, state in list(self.bot._random_msg_state.items()):
             if state.get('next_time') and now >= state['next_time']:
                 try:
+                    if self.wx_lock:
+                        self.wx_lock.acquire(holder=f"_check_random_msg_{target}")
+
                     msgs = self.config.random_msg_list.get(target, [])
                     if msgs:
                         msg = random.choice(msgs)
@@ -341,6 +384,9 @@ class WXUtils:
                         log(message=f"随机消息发送成功：{target}")
                 except Exception as e:
                     log(level="ERROR", message=f"随机消息发送出错：{target} - {e}")
+                finally:
+                    if self.wx_lock:
+                        self.wx_lock.release(holder=f"_check_random_msg_{target}")
                 self.bot._random_msg_state[target]['next_time'] = None
 
             if not self.bot._random_msg_state[target].get('next_time'):

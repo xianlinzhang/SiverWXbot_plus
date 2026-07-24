@@ -17,6 +17,8 @@ class ChatlogManager:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
+        self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
+        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def _init_chatlog_client(self):
         """初始化 Chatlog 客户端（若配置开启）"""
@@ -209,10 +211,16 @@ class ChatlogManager:
                     for keyword in self.config.keyword_dict:
                         if keyword in msg.content:
                             log(message=f"群组 {chat_name} 关键字消息：" + msg.content)
-                            self.config.human_delay()
-                            result = self.bot.wx.SendMsg(msg=self.config.keyword_dict[keyword], who=chat_name)
-                            self.bot.msg_replied_count += 1
-                            time.sleep(1)
+                            try:
+                                if self.wx_lock:
+                                    self.wx_lock.acquire(holder=f"chatlog_group_keyword_{chat_name}")
+                                self.config.human_delay()
+                                result = self.bot.wx.SendMsg(msg=self.config.keyword_dict[keyword], who=chat_name)
+                                self.bot.msg_replied_count += 1
+                                time.sleep(1)
+                            finally:
+                                if self.wx_lock:
+                                    self.wx_lock.release(holder=f"chatlog_group_keyword_{chat_name}")
                             return result
             
             if (self.config.AtMe in msg.content and self.config.group_reply_at) or not self.config.group_reply_at:
@@ -224,6 +232,7 @@ class ChatlogManager:
                 log(message=f"群组 {chat_name} 消息：" + content_without_at)
                 content_with_sender = f"{msg.sender}: {content_without_at}"
                 
+                reply = None
                 try:
                     history = []
                     if self.config.memory_switch and self.bot.memory_manager:
@@ -279,13 +288,20 @@ class ChatlogManager:
                 else:
                     parts = [reply]
                 
-                for i, part in enumerate(parts):
-                    log(message=f"{chat_name} 回复第{i}次：{part}")
-                    self.config.human_delay()
-                    if i == 0 and self.config.group_reply_at_msg:
-                        result = self.bot.wx.SendMsg(msg=part, who=chat_name, at=msg.sender)
-                    else:
-                        result = self.bot.wx.SendMsg(msg=part, who=chat_name)
+                try:
+                    if self.wx_lock:
+                        self.wx_lock.acquire(holder=f"chatlog_group_send_{chat_name}")
+                    
+                    for i, part in enumerate(parts):
+                        log(message=f"{chat_name} 回复第{i}次：{part}")
+                        self.config.human_delay()
+                        if i == 0 and self.config.group_reply_at_msg:
+                            result = self.bot.wx.SendMsg(msg=part, who=chat_name, at=msg.sender)
+                        else:
+                            result = self.bot.wx.SendMsg(msg=part, who=chat_name)
+                finally:
+                    if self.wx_lock:
+                        self.wx_lock.release(holder=f"chatlog_group_send_{chat_name}")
                 
                 self.bot.msg_replied_count += 1
                 return result
@@ -297,7 +313,13 @@ class ChatlogManager:
             chat_proxy.who = chat_name
             chat_proxy.SendMsg = lambda m: self.bot.wx.SendMsg(msg=m, who=chat_name)
             chat_proxy.chat_type = 'chat'
-            result = self.bot.process_command(chat_proxy, msg)
+            try:
+                if self.wx_lock:
+                    self.wx_lock.acquire(holder=f"chatlog_cmd_{chat_name}")
+                result = self.bot.process_command(chat_proxy, msg)
+            finally:
+                if self.wx_lock:
+                    self.wx_lock.release(holder=f"chatlog_cmd_{chat_name}")
             return result
         
         if (not self.config.AllListen_switch and
