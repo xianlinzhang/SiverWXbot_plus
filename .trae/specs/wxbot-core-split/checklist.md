@@ -1,0 +1,17 @@
+- [x] Checkpoint 1: `core/utils.py` 文件存在，包含工具函数和常量
+- [ ] Checkpoint 2: `core/config_manager.py` 文件存在，包含 `WXBotConfig` 类
+- [ ] Checkpoint 3: `core/memory_manager.py` 文件存在，包含 `MemoryManager` 和 `ReplyCountStore` 类
+- [ ] Checkpoint 4: `core/ai_api.py` 文件存在，包含 4 个 AI API 封装类
+- [ ] Checkpoint 5: `core/message_handler.py` 文件存在，包含消息处理相关方法
+- [ ] Checkpoint 6: `core/command_handler.py` 文件存在，包含命令处理相关方法
+- [ ] Checkpoint 7: `core/listen_manager.py` 文件存在，包含监听模式相关方法
+- [ ] Checkpoint 8: `core/chatlog_manager.py` 文件存在，包含 Chatlog 相关方法
+- [ ] Checkpoint 9: `core/wx_utils.py` 文件存在，包含辅助功能相关方法
+- [ ] Checkpoint 10: `core/__init__.py` 文件存在，作为包的入口
+- [ ] Checkpoint 11: `wxbot_core.py` 重构完成，不超过 500 行
+- [ ] Checkpoint 12: 所有模块间导入关系正确，无循环依赖
+- [ ] Checkpoint 13: 机器人能正常启动，无语法错误
+- [ ] Checkpoint 14: 消息接收和回复功能正常
+- [ ] Checkpoint 15: 管理员命令功能正常
+- [ ] Checkpoint 16: Chatlog 监听模式功能正常
+- [ ] Checkpoint 17: 定时任务和新好友处理功能正常
