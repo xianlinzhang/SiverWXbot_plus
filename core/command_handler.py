@@ -13,7 +13,6 @@ class CommandHandler:
         self.bot = bot
         self.config = bot.config
         self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
-        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def process_command(self, chat, message):
         """
@@ -200,15 +199,21 @@ class CommandHandler:
                 '[/标记已读 ID] 将指定消息标记为已读\n'
                 '[/标记未读 ID] 将指定消息标记为未读'
             )
-        elif content == "/微信锁指令":
+        elif content == "/任务队列指令":
             result = chat.SendMsg(
-                '--- 微信界面操作锁 ---\n'
-                '[/微信锁状态] 查看微信锁当前状态\n'
-                '[/占用微信锁] 手动占用微信锁\n'
-                '[/释放微信锁] 手动释放微信锁\n'
-                '[/强制释放微信锁] 强制释放微信锁（无视占用者）\n'
-                '[/开启微信锁] / [/关闭微信锁]'
+                '--- 任务队列 ---\n'
+                '[/任务队列] / [/task queue] 查看队列状态\n'
+                '[/任务列表] / [/task list] 查看待执行任务\n'
+                '[/任务历史] / [/task history] 查看最近任务历史\n'
+                '[/清空队列] / [/task clear] 清空待执行队列\n'
+                '[/取消任务 ID] / [/task cancel ID] 取消指定任务\n'
+                '--- Redis ---\n'
+                '[/Redis状态] 查看 Redis 连接状态\n'
+                '[/Redis测试] 测试 Redis 连接\n'
+                '--- 联系人缓存 ---\n'
+                '[/联系人缓存] 刷新联系人缓存到 Redis'
             )
+
         elif content == "/状态":
             result = self._build_status_msg(chat, message)
         elif content == "/关键词状态":
@@ -360,20 +365,22 @@ class CommandHandler:
             result = self.handle_mark_read(chat, message)
         elif content.startswith("/标记未读"):
             result = self.handle_mark_unread(chat, message)
-        elif content == "/微信锁状态":
-            result = self.handle_wx_lock_status(chat, message)
-        elif content == "/占用微信锁":
-            result = self.handle_acquire_wx_lock(chat, message)
-        elif content == "/释放微信锁":
-            result = self.handle_release_wx_lock(chat, message)
-        elif content == "/强制释放微信锁":
-            result = self.handle_force_release_wx_lock(chat, message)
-        elif content == "/开启微信锁":
-            self.config.set_config('wx_lock_enabled', True)
-            result = chat.SendMsg("微信界面操作锁已开启")
-        elif content == "/关闭微信锁":
-            self.config.set_config('wx_lock_enabled', False)
-            result = chat.SendMsg("微信界面操作锁已关闭")
+        elif content in ("/任务队列", "/task queue"):
+            result = self.handle_task_queue_status(chat, message)
+        elif content in ("/任务列表", "/task list"):
+            result = self.handle_task_list(chat, message)
+        elif content in ("/任务历史", "/task history"):
+            result = self.handle_task_history(chat, message)
+        elif content in ("/清空队列", "/task clear"):
+            result = self.handle_clear_task_queue(chat, message)
+        elif content.startswith("/取消任务") or content.startswith("/task cancel"):
+            result = self.handle_cancel_task(chat, message)
+        elif content == "/Redis状态":
+            result = self.handle_redis_status(chat, message)
+        elif content == "/Redis测试":
+            result = self.handle_redis_test(chat, message)
+        elif content == "/联系人缓存":
+            result = self.handle_refresh_contacts_cache(chat, message)
         else:
             if message.attr != "self":
                 result = self.bot.wx_send_ai(chat, message)
@@ -815,60 +822,154 @@ class CommandHandler:
         else:
             return chat.SendMsg(f"未找到消息 {msg_id}")
 
-    def handle_wx_lock_status(self, chat, message):
-        """处理 /微信锁状态 指令：查看微信锁当前状态"""
-        if not self.wx_lock:
-            return chat.SendMsg("微信锁功能未初始化")
+    def handle_task_queue_status(self, chat, message):
+        """处理 /任务队列 / /task queue 指令：查看任务队列状态"""
+        if not hasattr(self.bot, 'task_queue') or not self.bot.task_queue:
+            return chat.SendMsg("任务队列功能未初始化")
         
-        status = self.wx_lock.get_status()
-        enabled = "开启" if self.config.wx_lock_enabled else "关闭"
+        status = self.bot.task_queue.get_queue_status()
         
         lines = [
-            "--- 微信界面操作锁状态 ---",
-            f"锁开关：{enabled}",
-            f"锁状态：{'已占用' if status.get('held', False) else '空闲'}",
+            "--- 任务队列状态 ---",
+            f"待执行任务数：{status.get('pending_count', 0)}",
         ]
         
-        if status.get('held', False):
-            lines.append(f"占用者：{status.get('holder', '未知')}")
-            lines.append(f"占用时间：{status.get('hold_time', '未知')}")
-            lines.append(f"已占用：{status.get('held_duration', '0秒')}")
+        current_task = status.get('current_task')
+        if current_task:
+            lines.append(f"当前执行任务：")
+            lines.append(f"  ID: {current_task.get('id', '')}")
+            lines.append(f"  类型: {current_task.get('type', '')}")
+            lines.append(f"  状态: {current_task.get('status', '')}")
+            lines.append(f"  创建时间: {current_task.get('create_time', '')}")
+        else:
+            lines.append("当前执行任务：无")
         
-        lines.append(f"超时时间：{self.config.wx_lock_timeout}秒")
+        history_stats = status.get('history_stats', {})
+        lines.append(f"\n历史统计：")
+        lines.append(f"  总执行数：{history_stats.get('total', 0)}")
+        lines.append(f"  成功：{history_stats.get('success', 0)}")
+        lines.append(f"  失败：{history_stats.get('failed', 0)}")
+        
         return chat.SendMsg('\n'.join(lines))
 
-    def handle_acquire_wx_lock(self, chat, message):
-        """处理 /占用微信锁 指令：手动占用微信锁"""
-        if not self.wx_lock:
-            return chat.SendMsg("微信锁功能未初始化")
+    def handle_task_list(self, chat, message):
+        """处理 /任务列表 / /task list 指令：查看待执行任务列表"""
+        if not hasattr(self.bot, 'task_queue') or not self.bot.task_queue:
+            return chat.SendMsg("任务队列功能未初始化")
         
-        if not self.config.wx_lock_enabled:
-            return chat.SendMsg("微信锁已关闭，请先开启")
+        pending_tasks = self.bot.task_queue.get_pending_tasks()
         
-        result = self.wx_lock.acquire(holder="manual", timeout=5)
-        if result:
-            return chat.SendMsg("微信锁已成功占用")
-        else:
-            return chat.SendMsg("微信锁获取失败，可能被其他任务占用中")
+        if not pending_tasks:
+            return chat.SendMsg("暂无待执行任务")
+        
+        lines = ["--- 待执行任务列表 ---"]
+        for i, task in enumerate(pending_tasks[:10], 1):
+            lines.append(f"{i}. ID: {task.id}")
+            lines.append(f"   类型: {task.type}")
+            lines.append(f"   优先级: {task.priority}")
+            lines.append(f"   创建时间: {task.create_time}")
+            lines.append("")
+        
+        if len(pending_tasks) > 10:
+            lines.append(f"... 还有 {len(pending_tasks) - 10} 个待执行任务")
+        
+        return chat.SendMsg('\n'.join(lines))
 
-    def handle_release_wx_lock(self, chat, message):
-        """处理 /释放微信锁 指令：手动释放微信锁"""
-        if not self.wx_lock:
-            return chat.SendMsg("微信锁功能未初始化")
+    def handle_task_history(self, chat, message):
+        """处理 /任务历史 / /task history 指令：查看最近任务历史"""
+        if not hasattr(self.bot, 'task_queue') or not self.bot.task_queue:
+            return chat.SendMsg("任务队列功能未初始化")
         
-        result = self.wx_lock.release(holder="manual")
-        if result:
-            return chat.SendMsg("微信锁已成功释放")
-        else:
-            return chat.SendMsg("微信锁未被占用或占用者不匹配")
+        history = self.bot.task_queue.get_history(limit=10)
+        
+        if not history:
+            return chat.SendMsg("暂无任务历史")
+        
+        lines = ["--- 任务历史记录 ---"]
+        for i, task in enumerate(history, 1):
+            status_icon = "✓" if task.status == 'completed' else "✗" if task.status == 'failed' else "◦"
+            lines.append(f"{i}. {status_icon} ID: {task.id}")
+            lines.append(f"   类型: {task.type}")
+            lines.append(f"   状态: {task.status}")
+            if task.error:
+                lines.append(f"   错误: {task.error[:50]}...")
+            lines.append(f"   创建时间: {task.create_time}")
+            if task.end_time:
+                lines.append(f"   结束时间: {task.end_time}")
+            lines.append("")
+        
+        return chat.SendMsg('\n'.join(lines))
 
-    def handle_force_release_wx_lock(self, chat, message):
-        """处理 /强制释放微信锁 指令：强制释放微信锁"""
-        if not self.wx_lock:
-            return chat.SendMsg("微信锁功能未初始化")
+    def handle_clear_task_queue(self, chat, message):
+        """处理 /清空队列 / /task clear 指令：清空待执行任务队列"""
+        if not hasattr(self.bot, 'task_queue') or not self.bot.task_queue:
+            return chat.SendMsg("任务队列功能未初始化")
         
-        self.wx_lock.force_release()
-        return chat.SendMsg("微信锁已强制释放")
+        count = self.bot.task_queue.clear_queue()
+        return chat.SendMsg(f"已清空 {count} 个待执行任务")
+
+    def handle_cancel_task(self, chat, message):
+        """处理 /取消任务 <id> / /task cancel <id> 指令：取消指定待执行任务"""
+        if not hasattr(self.bot, 'task_queue') or not self.bot.task_queue:
+            return chat.SendMsg("任务队列功能未初始化")
+        
+        content = message.content
+        task_id = re.sub("/取消任务", "", content).strip()
+        task_id = re.sub("/task cancel", "", task_id).strip()
+        
+        if not task_id:
+            return chat.SendMsg("请提供任务ID，如：/取消任务 abc123")
+        
+        result = self.bot.task_queue.cancel_task(task_id)
+        if result:
+            return chat.SendMsg(f"任务 {task_id} 已取消")
+        else:
+            return chat.SendMsg(f"任务 {task_id} 不存在或已执行")
+
+    def handle_redis_status(self, chat, message):
+        """处理 /Redis状态 指令：查看 Redis 连接状态"""
+        if not hasattr(self.bot, 'redis_manager') or not self.bot.redis_manager:
+            return chat.SendMsg("Redis 功能未初始化")
+        
+        is_available = self.bot.redis_manager.is_available()
+        config = self.bot.redis_manager.config
+        
+        lines = [
+            "--- Redis 状态 ---",
+            f"连接状态：{'正常' if is_available else '异常'}",
+            f"主机：{config.get('host', '未知')}",
+            f"端口：{config.get('port', '未知')}",
+            f"数据库：{config.get('db', '未知')}",
+            f"超时时间：{config.get('timeout', '未知')}秒",
+            f"回退存储：{'开启' if config.get('fallback', False) else '关闭'}",
+        ]
+        
+        return chat.SendMsg('\n'.join(lines))
+
+    def handle_redis_test(self, chat, message):
+        """处理 /Redis测试 指令：测试 Redis 连接"""
+        if not hasattr(self.bot, 'redis_manager') or not self.bot.redis_manager:
+            return chat.SendMsg("Redis 功能未初始化")
+        
+        try:
+            is_available = self.bot.redis_manager.is_available()
+            if is_available:
+                return chat.SendMsg("Redis 连接测试：成功 ✓")
+            else:
+                return chat.SendMsg("Redis 连接测试：失败 ✗（当前使用本地回退存储）")
+        except Exception as e:
+            return chat.SendMsg(f"Redis 连接测试：异常 ✗\n错误信息：{str(e)}")
+
+    def handle_refresh_contacts_cache(self, chat, message):
+        """处理 /联系人缓存 指令：刷新联系人缓存到 Redis"""
+        if not hasattr(self.bot, 'chatlog_manager') or not self.bot.chatlog_manager:
+            return chat.SendMsg("联系人缓存功能未初始化")
+        
+        try:
+            self.bot.chatlog_manager.refresh_chatlog_contacts()
+            return chat.SendMsg("联系人缓存已刷新")
+        except Exception as e:
+            return chat.SendMsg(f"刷新联系人缓存失败：{str(e)}")
 
     def send_command_list(self, chat):
         """发送全量指令帮助列表"""
@@ -888,7 +989,7 @@ class CommandHandler:
             '/接口指令\n'
             '/计数器指令\n'
             '/消息存储指令\n'
-            '/微信锁指令\n'
+            '/任务队列指令\n'
             '作者:https://www.siver.top'
         )
         return chat.SendMsg(commands)

@@ -767,6 +767,11 @@ body.mobile-nav-open { overflow: hidden; }
   <div class="nav-item"><a class="nav-link" data-tab="tab-startstop"><i class="bi bi-clock-history"></i> 定时启停</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-memory"><i class="bi bi-journal-text"></i> 记忆管理</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-tasks"><i class="bi bi-list-task"></i> 任务队列</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-messages"><i class="bi bi-chat-dots"></i> 消息管理</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-contacts"><i class="bi bi-people-fill"></i> 联系人管理</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-chatlog"><i class="bi bi-activity"></i> Chatlog 监听</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-redis"><i class="bi bi-database"></i> Redis 配置</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-other"><i class="bi bi-sliders"></i> 其他配置</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-account"><i class="bi bi-person-gear"></i> 账号密码</a></div>
@@ -1528,61 +1533,7 @@ body.mobile-nav-open { overflow: hidden; }
     </div>
   </div>
 
-  <div class="col-lg-6 mb-4">
-    <div class="cfg-card">
-      <div class="cfg-card-header"><i class="bi bi-activity"></i><h5>Chatlog 监听模式</h5><span class="desc">使用 Chatlog HTTP API 替代 UI 自动化监听</span></div>
-      <div class="switch-row">
-        <input class="form-check-input" type="checkbox" id="chatlog_listen_switch" name="chatlog_listen_switch" {% if config.get('chatlog_listen_switch', False) %}checked{% endif %}>
-        <label for="chatlog_listen_switch">启用 Chatlog 监听</label>
-        <span class="switch-desc">开启后使用 Chatlog API 获取消息，替代 wxautox4 回调监听</span>
-      </div>
-      <div class="mb-3">
-        <label class="cfg-label" for="chatlog_url">Chatlog 服务地址</label>
-        <input type="text" class="form-control" id="chatlog_url" name="chatlog_url" value="{{ config.get('chatlog_url', 'http://127.0.0.1:5030') }}" placeholder="http://127.0.0.1:5030">
-        <div class="cfg-hint">Chatlog 插件的 HTTP API 地址</div>
-      </div>
-      <div class="row g-3" style="margin-bottom:10px;">
-        <div class="col-6">
-          <label class="cfg-label" for="chatlog_polling_interval">轮询间隔（秒）</label>
-          <input type="number" class="form-control" id="chatlog_polling_interval" min="1" max="60"
-                 value="{{ config.get('chatlog_polling_interval', 2) }}" placeholder="2">
-          <div class="cfg-hint">每几秒轮询一次新消息</div>
-        </div>
-        <div class="col-6">
-          <label class="cfg-label" for="chatlog_request_timeout">请求超时（秒）</label>
-          <input type="number" class="form-control" id="chatlog_request_timeout" min="1" max="30"
-                 value="{{ config.get('chatlog_request_timeout', 5) }}" placeholder="5">
-          <div class="cfg-hint">单次请求超时时间</div>
-        </div>
-      </div>
-      <div class="mb-3">
-        <label class="cfg-label" for="chatlog_reply_delay">消息回复延迟（秒）</label>
-        <input type="number" class="form-control" id="chatlog_reply_delay" min="0" max="300"
-               value="{{ config.get('chatlog_reply_delay', 0) }}" placeholder="0">
-        <div class="cfg-hint">消息发送时间与当前时间的差值，只有超过该时间的消息才会自动回复。设为0则立即回复。</div>
-      </div>
-      <hr>
-      <div class="switch-row">
-        <input class="form-check-input" type="checkbox" id="chatlog_context_switch" name="chatlog_context_switch" {% if config.get('chatlog_context_switch', False) %}checked{% endif %}>
-        <label for="chatlog_context_switch">启用上下文增强</label>
-        <span class="switch-desc">合并 Chatlog 历史消息与 MemoryManager 记忆，增强 AI 回复上下文</span>
-      </div>
-      <div class="mb-3">
-        <label class="cfg-label" for="chatlog_context_count">上下文消息数</label>
-        <input type="number" class="form-control" id="chatlog_context_count" min="10" max="500"
-               value="{{ config.get('chatlog_context_count', 50) }}" placeholder="50">
-        <div class="cfg-hint">从 Chatlog 获取的历史消息数量</div>
-      </div>
-      <div style="padding:9px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;color:#92400e;font-size:12.5px;line-height:1.8;">
-        <i class="bi bi-lightbulb" style="color:#d97706;margin-right:4px;"></i>
-        <strong>注意事项：</strong><br>
-        - 需要先安装并运行 Chatlog 微信插件（https://github.com/LC044/WeChatMsg）<br>
-        - 开启监听模式后，wxautox4 的消息回调将被禁用<br>
-        - 服务不可达时将自动回退到 UI 监听模式<br>
-        - 建议配合 MemoryManager 使用，以获得最佳上下文效果
-      </div>
-    </div>
-  </div>
+
 
   <!-- ===== Tab: Friend ===== -->
   <div class="config-panel" id="tab-friend">
@@ -2442,6 +2393,339 @@ body.mobile-nav-open { overflow: hidden; }
     </div>
   </div>
 
+  <!-- ===== Tab: Tasks ===== -->
+  <div class="config-panel" id="tab-tasks">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-list-task"></i><h5>任务队列</h5><span class="desc" id="tasks-refresh-hint">每5秒自动刷新</span></div>
+      <!-- 队列状态卡片 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-clock"></i></div>
+          <div class="stat-val" id="tasks-pending">-</div>
+          <div class="stat-label">待执行</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-play-fill"></i></div>
+          <div class="stat-val" id="tasks-current">-</div>
+          <div class="stat-label">当前任务</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-check-circle"></i></div>
+          <div class="stat-val" id="tasks-success">-</div>
+          <div class="stat-label">成功数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-x-circle"></i></div>
+          <div class="stat-val" id="tasks-failed">-</div>
+          <div class="stat-label">失败数</div>
+        </div>
+      </div>
+      <!-- 操作按钮 -->
+      <div style="display:flex;gap:10px;margin-bottom:20px;">
+        <button type="button" id="btn-cancel-task" class="btn btn-stop" style="font-size:13px;padding:8px 16px;">
+          <i class="bi bi-x-circle"></i> 取消任务
+        </button>
+        <button type="button" id="btn-clear-queue" class="btn btn-load" style="font-size:13px;padding:8px 16px;">
+          <i class="bi bi-trash"></i> 清空队列
+        </button>
+      </div>
+      <!-- 待执行任务列表 -->
+      <div class="mb-4">
+        <div style="font-size:14px;font-weight:700;color:var(--card-fg);margin-bottom:12px;">待执行任务</div>
+        <div id="tasks-pending-list" style="display:none;">
+          <table class="table table-sm" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">任务ID</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">类型</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">目标</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">优先级</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">创建时间</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">操作</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-pending-body"></tbody>
+          </table>
+        </div>
+        <div id="tasks-pending-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">暂无待执行任务</div>
+      </div>
+      <!-- 任务历史表格 -->
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--card-fg);margin-bottom:12px;">任务历史</div>
+        <div id="tasks-history-list" style="display:none;">
+          <table class="table table-sm" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">任务ID</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">类型</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">状态</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">结果</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">时间</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-history-body"></tbody>
+          </table>
+        </div>
+        <div id="tasks-history-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">暂无任务历史</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Messages ===== -->
+  <div class="config-panel" id="tab-messages">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-chat-dots"></i><h5>消息管理</h5><span class="desc">管理待确认消息和消息记录</span></div>
+      <!-- 消息统计卡片 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-clock"></i></div>
+          <div class="stat-val" id="msgs-pending">-</div>
+          <div class="stat-label">待确认</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-check-circle"></i></div>
+          <div class="stat-val" id="msgs-processed">-</div>
+          <div class="stat-label">已处理</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-reply"></i></div>
+          <div class="stat-val" id="msgs-replied">-</div>
+          <div class="stat-label">已回复</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-chat-left-text"></i></div>
+          <div class="stat-val" id="msgs-total">-</div>
+          <div class="stat-label">总消息数</div>
+        </div>
+      </div>
+      <!-- 消息搜索 -->
+      <div style="display:flex;gap:10px;margin-bottom:20px;">
+        <input type="text" class="form-control" id="msg-search-input" placeholder="搜索联系人或消息内容" style="flex:1;max-width:400px;">
+        <button type="button" id="btn-msg-search" class="btn btn-save" style="font-size:13px;padding:8px 16px;">
+          <i class="bi bi-search"></i> 搜索
+        </button>
+      </div>
+      <!-- 待确认消息列表 -->
+      <div class="mb-4">
+        <div style="font-size:14px;font-weight:700;color:var(--card-fg);margin-bottom:12px;">待确认消息</div>
+        <div id="msgs-pending-list" style="display:none;">
+          <div id="msgs-pending-container" style="display:flex;flex-direction:column;gap:12px;"></div>
+        </div>
+        <div id="msgs-pending-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">暂无待确认消息</div>
+      </div>
+      <!-- 搜索结果表格 -->
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--card-fg);margin-bottom:12px;">消息搜索结果</div>
+        <div id="msgs-search-results" style="display:none;">
+          <table class="table table-sm" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">联系人</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">时间</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">状态</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">内容</th>
+              </tr>
+            </thead>
+            <tbody id="msgs-search-body"></tbody>
+          </table>
+        </div>
+        <div id="msgs-search-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">请输入关键词进行搜索</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Contacts ===== -->
+  <div class="config-panel" id="tab-contacts">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-people-fill"></i><h5>联系人管理</h5><span class="desc">管理微信联系人列表</span></div>
+      <!-- 联系人统计卡片 -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-people"></i></div>
+          <div class="stat-val" id="contacts-total">-</div>
+          <div class="stat-label">总人数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-person"></i></div>
+          <div class="stat-val" id="contacts-friends">-</div>
+          <div class="stat-label">好友数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-people-fill"></i></div>
+          <div class="stat-val" id="contacts-groups">-</div>
+          <div class="stat-label">群聊数</div>
+        </div>
+      </div>
+      <!-- 操作和搜索 -->
+      <div style="display:flex;gap:10px;margin-bottom:20px;">
+        <button type="button" id="btn-refresh-contacts" class="btn btn-load" style="font-size:13px;padding:8px 16px;">
+          <i class="bi bi-arrow-clockwise"></i> 刷新联系人
+        </button>
+        <div style="flex:1;display:flex;justify-content:flex-end;gap:10px;">
+          <input type="text" class="form-control" id="contact-search-input" placeholder="搜索联系人" style="max-width:300px;">
+          <button type="button" id="btn-contact-search" class="btn btn-save" style="font-size:13px;padding:8px 16px;">
+            <i class="bi bi-search"></i> 搜索
+          </button>
+        </div>
+      </div>
+      <!-- 联系人列表表格 -->
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--card-fg);margin-bottom:12px;">联系人列表</div>
+        <div id="contacts-list" style="display:none;">
+          <table class="table table-sm" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">备注名</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">昵称</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">微信号</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">wxid</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">操作</th>
+              </tr>
+            </thead>
+            <tbody id="contacts-body"></tbody>
+          </table>
+        </div>
+        <div id="contacts-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">点击"刷新联系人"获取联系人列表</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Chat Modal for Contacts ===== -->
+  <div id="contact-chat-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:2000;">
+    <div id="contact-chat-window" style="position:absolute;background:#fff;border-radius:12px;width:90%;max-width:650px;height:80%;max-height:550px;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.4);cursor:default;">
+      <div id="contact-chat-header" style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;background:#f9fafb;cursor:move;border-top-left-radius:12px;border-top-right-radius:12px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:32px;height:32px;border-radius:50%;background:#3b82f6;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:600;">
+            <i class="bi bi-chat-dots"></i>
+          </div>
+          <span id="contact-chat-title" style="font-size:14px;font-weight:600;color:#111827;"></span>
+        </div>
+        <button type="button" onclick="closeContactChat()" style="padding:4px 8px;font-size:12px;border:none;background:none;color:#6b7280;cursor:pointer;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color='#6b7280'">
+          <i class="bi bi-x-lg"></i>
+        </button>
+      </div>
+      <div id="contact-chat-messages" style="flex:1;overflow-y:auto;padding:16px;background:#f3f4f6;">
+        <div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">加载中...</div>
+      </div>
+      <div style="padding:10px 16px;border-top:1px solid #e5e7eb;display:flex;gap:10px;background:#fff;">
+        <input type="text" id="contact-chat-input" placeholder="输入消息..." style="flex:1;padding:8px 16px;border:1px solid #d1d5db;border-radius:20px;font-size:13px;background:#f3f4f6;color:#111827;outline:none;" onfocus="this.style.borderColor='#3b82f6'" onblur="this.style.borderColor='#d1d5db'">
+        <button type="button" onclick="sendContactChatMessage()" style="border-radius:20px;padding:8px 20px;font-size:13px;background:#3b82f6;color:white;border:none;cursor:pointer;" onmouseover="this.style.background='#2563eb'" onmouseout="this.style.background='#3b82f6'">
+          <i class="bi bi-send"></i> 发送
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Chatlog 监听 ===== -->
+  <div class="config-panel" id="tab-chatlog">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-activity"></i><h5>Chatlog 监听模式</h5><span class="desc">使用 Chatlog HTTP API 替代 UI 自动化监听</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chatlog_listen_switch" name="chatlog_listen_switch" {% if config.get('chatlog_listen_switch', False) %}checked{% endif %}>
+        <label for="chatlog_listen_switch">启用 Chatlog 监听</label>
+        <span class="switch-desc">开启后使用 Chatlog API 获取消息，替代 wxautox4 回调监听</span>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="chatlog_url">Chatlog 服务地址</label>
+        <input type="text" class="form-control" id="chatlog_url" name="chatlog_url" value="{{ config.get('chatlog_url', 'http://127.0.0.1:5030') }}" placeholder="http://127.0.0.1:5030">
+        <div class="cfg-hint">Chatlog 插件的 HTTP API 地址</div>
+      </div>
+      <div class="row g-3" style="margin-bottom:10px;">
+        <div class="col-6">
+          <label class="cfg-label" for="chatlog_polling_interval">轮询间隔（秒）</label>
+          <input type="number" class="form-control" id="chatlog_polling_interval" min="1" max="60"
+                 value="{{ config.get('chatlog_polling_interval', 2) }}" placeholder="2">
+          <div class="cfg-hint">每几秒轮询一次新消息</div>
+        </div>
+        <div class="col-6">
+          <label class="cfg-label" for="chatlog_request_timeout">请求超时（秒）</label>
+          <input type="number" class="form-control" id="chatlog_request_timeout" min="1" max="30"
+                 value="{{ config.get('chatlog_request_timeout', 5) }}" placeholder="5">
+          <div class="cfg-hint">单次请求超时时间</div>
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="chatlog_reply_delay">消息回复延迟（秒）</label>
+        <input type="number" class="form-control" id="chatlog_reply_delay" min="0" max="300"
+               value="{{ config.get('chatlog_reply_delay', 0) }}" placeholder="0">
+        <div class="cfg-hint">消息发送时间与当前时间的差值，只有超过该时间的消息才会自动回复。设为0则立即回复。</div>
+      </div>
+      <hr>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chatlog_context_switch" name="chatlog_context_switch" {% if config.get('chatlog_context_switch', False) %}checked{% endif %}>
+        <label for="chatlog_context_switch">启用上下文增强</label>
+        <span class="switch-desc">合并 Chatlog 历史消息与 MemoryManager 记忆，增强 AI 回复上下文</span>
+      </div>
+      <div class="mb-3">
+        <label class="cfg-label" for="chatlog_context_count">上下文消息数</label>
+        <input type="number" class="form-control" id="chatlog_context_count" min="10" max="500"
+               value="{{ config.get('chatlog_context_count', 50) }}" placeholder="50">
+        <div class="cfg-hint">从 Chatlog 获取的历史消息数量</div>
+      </div>
+      <div style="padding:9px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;color:#92400e;font-size:12.5px;line-height:1.8;">
+        <i class="bi bi-exclamation-triangle" style="margin-right:6px;"></i>
+        <strong>注意：</strong>使用 Chatlog 监听模式时，请确保已经在微信中安装并启用了 Chatlog 插件，并开启了 HTTP API 服务。
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Tab: Redis 配置 ===== -->
+  <div class="config-panel" id="tab-redis">
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-database"></i><h5>Redis 配置</h5><span class="desc">配置 Redis 连接参数及存储选项</span></div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="redis_enabled" name="redis_enabled" {% if config.get('redis_enabled', False) %}checked{% endif %}>
+        <label for="redis_enabled">启用 Redis 存储</label>
+        <span class="switch-desc">开启后使用 Redis 存储任务队列、消息记录、联系人数据</span>
+      </div>
+      <div id="redis-settings" style="{% if not config.get('redis_enabled', False) %}display:none;{% endif %}">
+        <div class="row g-3">
+          <div class="col-6">
+            <label class="cfg-label" for="redis_host">Redis 服务器地址</label>
+            <input type="text" class="form-control" id="redis_host" name="redis_host" value="{{ config.get('redis_host', '127.0.0.1') }}" placeholder="127.0.0.1">
+            <div class="cfg-hint">Redis 服务器的 IP 地址或域名</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="redis_port">Redis 端口</label>
+            <input type="number" class="form-control" id="redis_port" name="redis_port" min="1" max="65535"
+                   value="{{ config.get('redis_port', 6379) }}" placeholder="6379">
+            <div class="cfg-hint">Redis 服务监听端口，默认 6379</div>
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-6">
+            <label class="cfg-label" for="redis_db">Redis 数据库</label>
+            <input type="number" class="form-control" id="redis_db" name="redis_db" min="0" max="15"
+                   value="{{ config.get('redis_db', 0) }}" placeholder="0">
+            <div class="cfg-hint">使用的 Redis 数据库编号（0-15）</div>
+          </div>
+          <div class="col-6">
+            <label class="cfg-label" for="redis_timeout">连接超时（秒）</label>
+            <input type="number" class="form-control" id="redis_timeout" name="redis_timeout" min="1" max="60"
+                   value="{{ config.get('redis_timeout', 5) }}" placeholder="5">
+            <div class="cfg-hint">连接 Redis 的超时时间</div>
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="cfg-label" for="redis_password">Redis 密码</label>
+          <input type="password" class="form-control" id="redis_password" name="redis_password" value="{{ config.get('redis_password', '') }}" placeholder="留空表示无密码">
+          <div class="cfg-hint">如果 Redis 设置了密码，请填写</div>
+        </div>
+        <div class="switch-row">
+          <input class="form-check-input" type="checkbox" id="redis_fallback" name="redis_fallback" {% if config.get('redis_fallback', True) %}checked{% endif %}>
+          <label for="redis_fallback">启用本地降级</label>
+          <span class="switch-desc">当 Redis 不可用时自动切换到本地文件存储</span>
+        </div>
+      </div>
+      <hr>
+      <div style="display:flex;gap:10px;">
+        <button type="button" id="btnRedisTest" class="btn btn-add" style="flex:1;"><i class="bi bi-wrench"></i> 测试连接</button>
+        <button type="button" id="btnRedisStats" class="btn btn-add" style="flex:1;"><i class="bi bi-bar-chart"></i> 查看统计</button>
+      </div>
+      <div id="redis-status" style="margin-top:14px;"></div>
+    </div>
+  </div>
+
   <!-- ===== Tab: Backup ===== -->
   <div class="config-panel" id="tab-backup">
     <div class="cfg-card">
@@ -2975,7 +3259,12 @@ $(function(){
     if(typeof syncSiverPanelPolling === 'function'){
       syncSiverPanelPolling(tabId === 'tab-siver-panel');
     }
+    if(typeof syncCustomPolling === 'function'){
+      syncCustomPolling(tabId);
+    }
   }
+  window.activateTab = activateTab;
+  window.getActiveTabId = getActiveTabId;
   $('#mobileMenuBtn').on('click', function(e){
     e.preventDefault();
     setMobileSidebar(true);
@@ -4984,6 +5273,7 @@ $(function(){
   $(document).on('click', '#btn-refresh-memory', function(){
     loadMemoryWxList(_memWxId||undefined, _memChatName||undefined);
   });
+  window.loadMemoryWxList = loadMemoryWxList;
 
   // ===== Log Polling =====
   function parseLogId(value){
@@ -5147,6 +5437,591 @@ function toggleGroupSplitReply(checked) {
     </div>
   </div>
 </div>
+<script>
+// ===== Tasks Panel =====
+var tasksPollTimer = null;
+var tasksPollInFlight = false;
+var TASKS_POLL_MS = 5000;
+
+function refreshTasks(){
+  return $.getJSON('/api/tasks', function(res){
+    if(!res || res.code !== 0) return;
+    var d = res.data || {};
+    $('#tasks-pending').text(d.pending_count !== undefined ? d.pending_count : '-');
+    var currentTaskText = '-';
+    if(d.current_task && typeof d.current_task === 'object'){
+      var ct = d.current_task;
+      var taskType = ct.type || ct.task_type || 'unknown';
+      var taskTarget = ct.params ? (ct.params.chat_name || ct.params.target || '') : '';
+      currentTaskText = taskType + (taskTarget ? ' (' + taskTarget + ')' : '');
+    }
+    $('#tasks-current').text(currentTaskText);
+    $('#tasks-success').text(d.success_count !== undefined ? d.success_count : '-');
+    $('#tasks-failed').text(d.failed_count !== undefined ? d.failed_count : '-');
+
+    var pendingList = d.pending_tasks || [];
+    if(pendingList.length > 0){
+      $('#tasks-pending-list').show();
+      $('#tasks-pending-empty').hide();
+      var html = '';
+      pendingList.forEach(function(task){
+        html += '<tr style="border-bottom:1px solid var(--border);">'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.id+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.type+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.target+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.priority+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.create_time+'</td>'+
+          '<td style="padding:8px 12px;">'+
+            '<button type="button" class="btn-rm" style="padding:4px 8px;font-size:12px;" onclick="cancelTask(\''+task.id+'\')">取消</button>'+
+          '</td></tr>';
+      });
+      $('#tasks-pending-body').html(html);
+    } else {
+      $('#tasks-pending-list').hide();
+      $('#tasks-pending-empty').show();
+    }
+
+    var historyList = d.task_history || [];
+    if(historyList.length > 0){
+      $('#tasks-history-list').show();
+      $('#tasks-history-empty').hide();
+      var html = '';
+      historyList.forEach(function(task){
+        var statusClass = task.status === 'success' ? '#07C160' : task.status === 'failed' ? '#FA5151' : '#FFC300';
+        html += '<tr style="border-bottom:1px solid var(--border);">'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.id+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.type+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:'+statusClass+';font-weight:600;">'+task.status+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(task.result || '-')+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.time+'</td></tr>';
+      });
+      $('#tasks-history-body').html(html);
+    } else {
+      $('#tasks-history-list').hide();
+      $('#tasks-history-empty').show();
+    }
+  });
+}
+
+function cancelTask(taskId){
+  $.post('/api/tasks/cancel', {task_id: taskId}, function(res){
+    if(res.code === 0){
+      svModal.success('任务已取消', '操作成功');
+      refreshTasks();
+    } else {
+      svModal.error(res.message || '取消失败', '操作失败');
+    }
+  }, 'json');
+}
+
+$('#btn-cancel-task').click(function(){
+  svModal.error('请在任务列表中点击具体任务的"取消"按钮', '操作提示');
+});
+
+$('#btn-clear-queue').click(function(){
+  svModal.confirm('确定清空所有待执行任务？', function(){
+    $.post('/api/tasks/clear', function(res){
+      if(res.code === 0){
+        svModal.success('队列已清空', '操作成功');
+        refreshTasks();
+      } else {
+        svModal.error(res.message || '清空失败', '操作失败');
+      }
+    }, 'json');
+  }, '清空队列', '确定清空', '取消');
+});
+
+function scheduleTasksPolling(delay){
+  clearTimeout(tasksPollTimer);
+  if(delay == null) return;
+  tasksPollTimer = setTimeout(function(){ triggerTasksPolling(false); }, delay);
+}
+
+function triggerTasksPolling(immediate){
+  clearTimeout(tasksPollTimer);
+  if(tasksPollInFlight){
+    scheduleTasksPolling(TASKS_POLL_MS);
+    return;
+  }
+  tasksPollInFlight = true;
+  refreshTasks().always(function(){
+    tasksPollInFlight = false;
+    scheduleTasksPolling(TASKS_POLL_MS);
+  });
+}
+
+function syncTasksPolling(immediate){
+  if(immediate && getActiveTabId() === 'tab-tasks'){
+    triggerTasksPolling(true);
+    return;
+  }
+  if(getActiveTabId() === 'tab-tasks'){
+    scheduleTasksPolling(TASKS_POLL_MS);
+  } else {
+    clearTimeout(tasksPollTimer);
+  }
+}
+
+// ===== Messages Panel =====
+var messagesPollTimer = null;
+var messagesPollInFlight = false;
+var MESSAGES_POLL_MS = 5000;
+
+function refreshMessages(){
+  return $.getJSON('/api/messages', function(res){
+    if(!res || res.code !== 0) return;
+    var d = res.data || {};
+    $('#msgs-pending').text(d.pending_count !== undefined ? d.pending_count : '-');
+    $('#msgs-processed').text(d.processed_count !== undefined ? d.processed_count : '-');
+    $('#msgs-replied').text(d.replied_count !== undefined ? d.replied_count : '-');
+    $('#msgs-total').text(d.total_count !== undefined ? d.total_count : '-');
+
+    var pendingList = d.pending_confirm || [];
+    if(pendingList.length > 0){
+      $('#msgs-pending-list').show();
+      $('#msgs-pending-empty').hide();
+      var html = '';
+      pendingList.forEach(function(msg){
+        html += '<div style="padding:12px 14px;background:var(--muted-bg);border:1px solid var(--border);border-radius:8px;">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'+
+            '<span style="font-weight:600;font-size:13.5px;color:var(--card-fg);">'+msg.chat_name+'</span>'+
+            '<span style="font-size:12px;color:var(--muted);">'+msg.time+'</span>'+
+          '</div>'+
+          '<div style="font-size:13px;color:var(--card-fg);margin-bottom:10px;word-break:break-all;">'+msg.content+'</div>'+
+          '<div style="display:flex;gap:8px;justify-content:flex-end;">'+
+            '<button type="button" class="btn-rm" style="padding:4px 12px;font-size:12px;background:#f2f2f2;color:#666;border:1px solid var(--border);" onclick="rejectMessage(\''+msg.chat_name+'\', \''+msg.message_id+'\')">拒绝</button>'+
+            '<button type="button" class="btn-add" style="padding:4px 12px;font-size:12px;background:var(--primary);color:#fff;border:none;" onclick="confirmMessage(\''+msg.chat_name+'\', \''+msg.message_id+'\')">确认</button>'+
+          '</div></div>';
+      });
+      $('#msgs-pending-container').html(html);
+    } else {
+      $('#msgs-pending-list').hide();
+      $('#msgs-pending-empty').show();
+    }
+  });
+}
+
+function confirmMessage(chatName, msgId){
+  $.post('/api/messages/confirm', {chat_name: chatName, message_id: msgId}, function(res){
+    if(res.code === 0){
+      svModal.success('消息已确认', '操作成功');
+      refreshMessages();
+    } else {
+      svModal.error(res.message || '确认失败', '操作失败');
+    }
+  }, 'json');
+}
+
+function rejectMessage(chatName, msgId){
+  $.post('/api/messages/reject', {chat_name: chatName, message_id: msgId}, function(res){
+    if(res.code === 0){
+      svModal.success('消息已拒绝', '操作成功');
+      refreshMessages();
+    } else {
+      svModal.error(res.message || '拒绝失败', '操作失败');
+    }
+  }, 'json');
+}
+
+$('#btn-msg-search').click(function(){
+  var keyword = $('#msg-search-input').val().trim();
+  if(!keyword){
+    svModal.error('请输入搜索关键词', '搜索提示');
+    return;
+  }
+  $.getJSON('/api/messages/search', {keyword: keyword}, function(res){
+    if(!res || res.code !== 0){
+      svModal.error(res.message || '搜索失败', '操作失败');
+      return;
+    }
+    var results = res.data || [];
+    if(results.length > 0){
+      $('#msgs-search-results').show();
+      $('#msgs-search-empty').hide();
+      var html = '';
+      results.forEach(function(msg){
+        var statusClass = msg.status === 'confirmed' ? '#07C160' : msg.status === 'rejected' ? '#FA5151' : '#FFC300';
+        html += '<tr style="border-bottom:1px solid var(--border);">'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+msg.chat_name+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+msg.receive_time+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:'+statusClass+';font-weight:600;">'+msg.status+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+msg.content+'</td></tr>';
+      });
+      $('#msgs-search-body').html(html);
+    } else {
+      $('#msgs-search-results').hide();
+      $('#msgs-search-empty').show().text('未找到匹配的消息');
+    }
+  });
+});
+
+function scheduleMessagesPolling(delay){
+  clearTimeout(messagesPollTimer);
+  if(delay == null) return;
+  messagesPollTimer = setTimeout(function(){ triggerMessagesPolling(false); }, delay);
+}
+
+function triggerMessagesPolling(immediate){
+  clearTimeout(messagesPollTimer);
+  if(messagesPollInFlight){
+    scheduleMessagesPolling(MESSAGES_POLL_MS);
+    return;
+  }
+  messagesPollInFlight = true;
+  refreshMessages().always(function(){
+    messagesPollInFlight = false;
+    scheduleMessagesPolling(MESSAGES_POLL_MS);
+  });
+}
+
+function syncMessagesPolling(immediate){
+  if(immediate && getActiveTabId() === 'tab-messages'){
+    triggerMessagesPolling(true);
+    return;
+  }
+  if(getActiveTabId() === 'tab-messages'){
+    scheduleMessagesPolling(MESSAGES_POLL_MS);
+  } else {
+    clearTimeout(messagesPollTimer);
+  }
+}
+
+// ===== Contacts Panel =====
+var contactsList = [];
+
+function refreshContacts(){
+  var $btn = $('#btn-refresh-contacts');
+  $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 刷新中...');
+  $.getJSON('/api/contacts', function(res){
+    if(!res || res.code !== 0){
+      svModal.error(res.message || '获取联系人失败', '操作失败');
+      return;
+    }
+    var d = res.data || {};
+    contactsList = d.contacts || [];
+    $('#contacts-total').text(d.total_count !== undefined ? d.total_count : '-');
+    $('#contacts-friends').text(d.friend_count !== undefined ? d.friend_count : '-');
+    $('#contacts-groups').text(d.group_count !== undefined ? d.group_count : '-');
+
+    renderContactsList(contactsList);
+  }).always(function(){
+    $btn.prop('disabled', false).html('<i class="bi bi-arrow-clockwise"></i> 刷新联系人');
+  });
+}
+
+function renderContactsList(list){
+  if(list.length > 0){
+    $('#contacts-list').show();
+    $('#contacts-empty').hide();
+    var html = '';
+    list.forEach(function(contact){
+      var wxid = contact.userName || contact.wxid || '';
+      var nickname = contact.nickName || contact.nickname || '';
+      var alias = contact.alias || contact.wxid || '';
+      var remark = contact.remark || '';
+      html += '<tr style="border-bottom:1px solid var(--border);">'+
+        '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(remark || '-')+'</td>'+
+        '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(nickname || '-')+'</td>'+
+        '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(alias || '-')+'</td>'+
+        '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(wxid || '-')+'</td>'+
+        '<td style="padding:8px 12px;">'+
+          '<button type="button" class="btn-add" style="padding:4px 8px;font-size:12px;" onclick="window.viewContactMessages(\''+wxid+'\', \''+remark.replace(/'/g, "\\'")+'\', \''+nickname.replace(/'/g, "\\'")+'\')">查看消息</button>'+
+        '</td></tr>';
+    });
+    $('#contacts-body').html(html);
+  } else {
+    $('#contacts-list').hide();
+    $('#contacts-empty').show();
+  }
+}
+
+function viewContactMessages(wxid, remark, nickname){
+  var displayName = remark || nickname || wxid;
+  $('#contact-chat-title').text(displayName);
+  $('#contact-chat-messages').html('<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">加载中...</div>');
+  $('#contact-chat-input').val('');
+  $('#contact-chat-modal').show();
+  
+  centerChatWindow();
+  
+  window._currentChatWxid = wxid;
+  window._currentChatName = displayName;
+  
+  $.getJSON('/api/messages/history?chat_name='+encodeURIComponent(displayName)+'&wxid='+encodeURIComponent(wxid))
+    .done(function(res){
+      if(res.code === 0 && res.data){
+        renderContactChatMessages(res.data);
+      } else {
+        $('#contact-chat-messages').html('<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">暂无消息记录</div>');
+      }
+    })
+    .fail(function(){
+      $('#contact-chat-messages').html('<div style="padding:40px;text-align:center;color:#dc2626;font-size:13px;">加载消息失败</div>');
+    });
+}
+
+function centerChatWindow(){
+  var modal = $('#contact-chat-modal');
+  var window = $('#contact-chat-window');
+  var modalWidth = modal.width();
+  var modalHeight = modal.height();
+  var windowWidth = window.width();
+  var windowHeight = window.height();
+  
+  var left = (modalWidth - windowWidth) / 2;
+  var top = (modalHeight - windowHeight) / 2;
+  
+  window.css({
+    left: Math.max(0, left) + 'px',
+    top: Math.max(0, top) + 'px'
+  });
+}
+
+function closeContactChat(){
+  $('#contact-chat-modal').hide();
+  window._currentChatWxid = null;
+  window._currentChatName = null;
+}
+
+function initChatDrag(){
+  var header = $('#contact-chat-header');
+  var window = $('#contact-chat-window');
+  var isDragging = false;
+  var startX, startY, initialLeft, initialTop;
+  
+  header.on('mousedown', function(e){
+    isDragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    initialLeft = window.position().left;
+    initialTop = window.position().top;
+    e.preventDefault();
+  });
+  
+  $(document).on('mousemove', function(e){
+    if(!isDragging) return;
+    
+    var deltaX = e.clientX - startX;
+    var deltaY = e.clientY - startY;
+    var newLeft = initialLeft + deltaX;
+    var newTop = initialTop + deltaY;
+    
+    var maxLeft = $('#contact-chat-modal').width() - window.width();
+    var maxTop = $('#contact-chat-modal').height() - window.height();
+    
+    newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+    newTop = Math.max(0, Math.min(newTop, maxTop));
+    
+    window.css({
+      left: newLeft + 'px',
+      top: newTop + 'px'
+    });
+  });
+  
+  $(document).on('mouseup', function(){
+    isDragging = false;
+  });
+  
+  $('#contact-chat-modal').on('click', function(e){
+    if(e.target === this){
+      closeContactChat();
+    }
+  });
+}
+
+function renderContactChatMessages(messages){
+  var html = '';
+  messages.forEach(function(msg){
+    var isSelf = msg.attr === 'self';
+    html += '<div style="display:flex;margin-bottom:16px;'+(isSelf?'justify-content:flex-end':'justify-content:flex-start')+';">'+
+      '<div style="max-width:75%;padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.6;'+
+      (isSelf?'background:#3b82f6;color:white;border-bottom-right-radius:6px;':'background:white;color:#111827;border-bottom-left-radius:6px;border:1px solid #e5e7eb;box-shadow:0 1px 2px rgba(0,0,0,0.05);')+'">'+
+      $('<span>').text(msg.content).html()+
+      '</div>'+
+      '<div style="font-size:11px;color:#9ca3af;margin:4px 10px;">'+msg.time+'</div>'+
+      '</div>';
+  });
+  $('#contact-chat-messages').html(html || '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">暂无消息记录</div>');
+  $('#contact-chat-messages').scrollTop($('#contact-chat-messages')[0].scrollHeight);
+}
+
+function sendContactChatMessage(){
+  var content = $('#contact-chat-input').val().trim();
+  if(!content || !window._currentChatWxid) return;
+  
+  $('#contact-chat-input').val('');
+  
+  $.post('/api/send_message', {
+    chat_name: window._currentChatWxid,
+    content: content
+  })
+  .done(function(res){
+    if(res.code === 0){
+      var now = new Date();
+      var timeStr = now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
+      var html = $('#contact-chat-messages').html();
+      html += '<div style="display:flex;margin-bottom:12px;justify-content:flex-end;">'+
+        '<div style="max-width:70%;padding:8px 12px;border-radius:16px;font-size:13px;line-height:1.5;background:var(--accent);color:white;border-bottom-right-radius:4px;">'+
+        $('<span>').text(content).html()+
+        '</div>'+
+        '<div style="font-size:11px;color:var(--muted);margin:4px 8px;">'+timeStr+'</div>'+
+        '</div>';
+      $('#contact-chat-messages').html(html);
+      $('#contact-chat-messages').scrollTop($('#contact-chat-messages')[0].scrollHeight);
+    } else {
+      svModal.error(res.message || '发送失败');
+    }
+  })
+  .fail(function(){
+    svModal.error('发送失败');
+  });
+}
+window.viewContactMessages = viewContactMessages;
+
+$('#btn-contact-search').click(function(){
+  var keyword = $('#contact-search-input').val().trim().toLowerCase();
+  if(!keyword){
+    renderContactsList(contactsList);
+    return;
+  }
+  var filtered = contactsList.filter(function(c){
+    return (c.remark || '').toLowerCase().indexOf(keyword) !== -1 ||
+           (c.nickname || '').toLowerCase().indexOf(keyword) !== -1 ||
+           (c.wxid || '').toLowerCase().indexOf(keyword) !== -1;
+  });
+  renderContactsList(filtered);
+});
+
+$('#btn-refresh-contacts').click(refreshContacts);
+
+$(document).on('click', '[data-tab="tab-contacts"]', function(){
+  if(contactsList.length === 0){
+    refreshContacts();
+  }
+});
+
+$(document).on('click', '[data-tab="tab-tasks"]', function(){
+  triggerTasksPolling(true);
+});
+
+$(document).on('click', '[data-tab="tab-messages"]', function(){
+  triggerMessagesPolling(true);
+});
+
+function syncCustomPolling(activeTabId){
+  syncTasksPolling(false);
+  syncMessagesPolling(false);
+}
+
+$(function(){
+  initChatDrag();
+  
+  $('#redis_enabled').on('change', function(){
+    if($(this).is(':checked')){
+      $('#redis-settings').show();
+    } else {
+      $('#redis-settings').hide();
+    }
+  });
+  
+  $('#btnRedisTest').on('click', function(){
+    var $btn = $(this);
+    $btn.prop('disabled', true).text('测试中...');
+    
+    $.getJSON('/api/redis/status', function(res){
+      var statusDiv = $('#redis-status');
+      if(res && res.code === 0){
+        var data = res.data || {};
+        statusDiv.html(
+          '<div style="padding:12px;background:#D1FAE5;border:1px solid #A7F3D0;border-radius:6px;color:#065F46;font-size:13px;">'+
+            '<div style="font-weight:600;margin-bottom:6px;">✓ Redis 连接成功</div>'+
+            '<div>服务器: ' + (data.host || 'unknown') + ':' + (data.port || 'unknown') + '</div>'+
+            '<div>数据库: ' + (data.db || 'unknown') + '</div>'+
+            '<div>状态: ' + (data.available ? '可用' : '不可用') + '</div>'+
+            '<div>模式: ' + (data.mode || 'unknown') + '</div>'+
+          '</div>'
+        );
+      } else {
+        statusDiv.html(
+          '<div style="padding:12px;background:#FEE2E2;border:1px solid #FECACA;border-radius:6px;color:#991B1B;font-size:13px;">'+
+            '<div style="font-weight:600;margin-bottom:6px;">✗ Redis 连接失败</div>'+
+            '<div>' + (res ? res.message : '未知错误') + '</div>'+
+          '</div>'
+        );
+      }
+      $btn.prop('disabled', false).html('<i class="bi bi-wrench"></i> 测试连接');
+    }).fail(function(){
+      $('#redis-status').html(
+        '<div style="padding:12px;background:#FEE2E2;border:1px solid #FECACA;border-radius:6px;color:#991B1B;font-size:13px;">'+
+          '<div style="font-weight:600;margin-bottom:6px;">✗ 请求失败</div>'+
+          '<div>无法连接到服务器</div>'+
+        '</div>'
+      );
+      $btn.prop('disabled', false).html('<i class="bi bi-wrench"></i> 测试连接');
+    });
+  });
+  
+  $('#btnRedisStats').on('click', function(){
+    var $btn = $(this);
+    $btn.prop('disabled', true).text('加载中...');
+    
+    $.getJSON('/api/redis/stats', function(res){
+      var statusDiv = $('#redis-status');
+      if(res && res.code === 0){
+        var data = res.data || {};
+        var html = '<div style="padding:12px;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:6px;color:#1E40AF;font-size:13px;">'+
+          '<div style="font-weight:600;margin-bottom:8px;">📊 Redis 统计信息</div>';
+        
+        if(data.keys_count !== undefined){
+          html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'+
+            '<span>总键数:</span><span style="font-weight:600;">' + data.keys_count + '</span>'+
+            '</div>';
+        }
+        if(data.tasks !== undefined){
+          html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'+
+            '<span>任务队列:</span><span style="font-weight:600;">' + data.tasks + '</span>'+
+            '</div>';
+        }
+        if(data.messages !== undefined){
+          html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'+
+            '<span>消息记录:</span><span style="font-weight:600;">' + data.messages + '</span>'+
+            '</div>';
+        }
+        if(data.contacts !== undefined){
+          html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'+
+            '<span>联系人:</span><span style="font-weight:600;">' + data.contacts + '</span>'+
+            '</div>';
+        }
+        if(data.memory !== undefined){
+          html += '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">'+
+            '<span>记忆数据:</span><span style="font-weight:600;">' + data.memory + '</span>'+
+            '</div>';
+        }
+        
+        html += '</div>';
+        statusDiv.html(html);
+      } else {
+        statusDiv.html(
+          '<div style="padding:12px;background:#FEE2E2;border:1px solid #FECACA;border-radius:6px;color:#991B1B;font-size:13px;">'+
+            '<div style="font-weight:600;margin-bottom:6px;">✗ 获取统计失败</div>'+
+            '<div>' + (res ? res.message : '未知错误') + '</div>'+
+          '</div>'
+        );
+      }
+      $btn.prop('disabled', false).html('<i class="bi bi-bar-chart"></i> 查看统计');
+    }).fail(function(){
+      $('#redis-status').html(
+        '<div style="padding:12px;background:#FEE2E2;border:1px solid #FECACA;border-radius:6px;color:#991B1B;font-size:13px;">'+
+          '<div style="font-weight:600;margin-bottom:6px;">✗ 请求失败</div>'+
+          '<div>无法连接到服务器</div>'+
+        '</div>'
+      );
+      $btn.prop('disabled', false).html('<i class="bi bi-bar-chart"></i> 查看统计');
+    });
+  });
+});
+</script>
+
 <script>
 function showActivateDialog() {
   $('#activate-code-input').val('');

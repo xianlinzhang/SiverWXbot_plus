@@ -129,8 +129,23 @@ class WXBotConfig:
         self.message_store_max_count = 1000                            # 单会话最大存储消息数
 
         # ---------- 微信界面操作锁配置 ----------
-        self.wx_lock_enabled = True                                    # 微信界面操作锁开关
-        self.wx_lock_timeout = 300                                     # 锁自动超时时间（秒）
+        self.wx_lock_enabled = True                                    # 微信界面操作锁开关（已废弃，由任务队列替代）
+        self.wx_lock_timeout = 300                                     # 锁自动超时时间（秒）（已废弃）
+
+        # ---------- Redis 配置 ----------
+        self.redis_enabled = True                                     # Redis 总开关
+        self.redis_host = '127.0.0.1'                                  # Redis 主机地址
+        self.redis_port = 6379                                         # Redis 端口
+        self.redis_db = 0                                              # Redis 数据库编号
+        self.redis_password = ''                                       # Redis 密码（可选）
+        self.redis_timeout = 5                                         # Redis 连接超时时间（秒）
+        self.redis_retry_count = 3                                     # 连接重试次数
+        self.redis_fallback = True                                     # Redis 不可用时是否降级到本地存储
+
+        # ---------- 任务队列配置 ----------
+        self.task_queue_enabled = True                                 # 任务队列总开关
+        self.task_queue_max_pending = 1000                             # 最大待执行任务数
+        self.task_queue_history_limit = 500                            # 任务历史保留条数
 
         # 初始化时自动加载配置并同步到属性
         self.load_config()
@@ -269,6 +284,17 @@ class WXBotConfig:
                     "message_store_max_count": 1000,
                     "wx_lock_enabled": True,
                     "wx_lock_timeout": 300,
+                    "redis_enabled": True,
+                    "redis_host": "127.0.0.1",
+                    "redis_port": 6379,
+                    "redis_db": 0,
+                    "redis_password": "",
+                    "redis_timeout": 5,
+                    "redis_retry_count": 3,
+                    "redis_fallback": True,
+                    "task_queue_enabled": True,
+                    "task_queue_max_pending": 1000,
+                    "task_queue_history_limit": 500,
                 }
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(base_config, f, ensure_ascii=False, indent=4)
@@ -586,9 +612,51 @@ class WXBotConfig:
         self.chat_reply_confirm_wait_timeout = max(60, int(self.config.get('chat_reply_confirm_wait_timeout', 300)))
         self.message_store_max_count = max(100, int(self.config.get('message_store_max_count', 1000)))
 
-        # 微信界面操作锁配置
+        # 微信界面操作锁配置（已废弃，由任务队列替代）
         self.wx_lock_enabled = bool(self.config.get('wx_lock_enabled', True))
         self.wx_lock_timeout = max(30, int(self.config.get('wx_lock_timeout', 300)))
+
+        # Redis 配置
+        _redis_defaults = {
+            'redis_enabled': True,
+            'redis_host': '127.0.0.1',
+            'redis_port': 6379,
+            'redis_db': 0,
+            'redis_password': '',
+            'redis_timeout': 5,
+            'redis_retry_count': 3,
+            'redis_fallback': True,
+        }
+        _redis_needs_save = any(k not in self.config for k in _redis_defaults)
+        for k, v in _redis_defaults.items():
+            self.config.setdefault(k, v)
+        if _redis_needs_save:
+            self.save_config()
+            log(message='已自动补充 Redis 配置默认值')
+        self.redis_enabled = bool(self.config.get('redis_enabled', False))
+        self.redis_host = self.config.get('redis_host', '127.0.0.1')
+        self.redis_port = max(1, int(self.config.get('redis_port', 6379)))
+        self.redis_db = max(0, int(self.config.get('redis_db', 0)))
+        self.redis_password = self.config.get('redis_password', '')
+        self.redis_timeout = max(1, int(self.config.get('redis_timeout', 5)))
+        self.redis_retry_count = max(1, int(self.config.get('redis_retry_count', 3)))
+        self.redis_fallback = bool(self.config.get('redis_fallback', True))
+
+        # 任务队列配置
+        _task_queue_defaults = {
+            'task_queue_enabled': True,
+            'task_queue_max_pending': 1000,
+            'task_queue_history_limit': 500,
+        }
+        _task_queue_needs_save = any(k not in self.config for k in _task_queue_defaults)
+        for k, v in _task_queue_defaults.items():
+            self.config.setdefault(k, v)
+        if _task_queue_needs_save:
+            self.save_config()
+            log(message='已自动补充任务队列配置默认值')
+        self.task_queue_enabled = bool(self.config.get('task_queue_enabled', True))
+        self.task_queue_max_pending = max(10, int(self.config.get('task_queue_max_pending', 1000)))
+        self.task_queue_history_limit = max(10, int(self.config.get('task_queue_history_limit', 500)))
 
         log(message="全局配置更新完成")
 

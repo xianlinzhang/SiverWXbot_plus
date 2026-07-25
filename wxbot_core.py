@@ -44,7 +44,8 @@ from core.listen_manager import ListenManager
 from core.chatlog_manager import ChatlogManager
 from core.wx_utils import WXUtils
 from core.message_store import MessageStore
-from core.wx_lock import WXLock
+from core.redis_manager import RedisManager
+from core.task_queue import TaskQueue
 
 # ============================================================
 # wxautox 全局参数配置
@@ -139,11 +140,14 @@ class WXBot:
         # 微信辅助工具
         self.wx_utils = WXUtils(self)
 
-        # 消息存储模块
-        self.message_store = MessageStore(self.config)
+        # 消息存储模块（先使用临时 wx_id，init_wx_listeners 后会更新）
+        self.message_store = MessageStore('wxbot_default', self.config)
 
-        # 微信界面操作锁
-        self.wx_lock = WXLock(self.config)
+        # Redis 管理器
+        self.redis_manager = RedisManager(self.config)
+
+        # 任务队列
+        self.task_queue = TaskQueue(self)
 
     def _init_api(self):
         """根据配置中的 api_sdk 字段实例化对应的 AI 接口对象（默认接口）"""
@@ -610,6 +614,10 @@ class WXBot:
             self.run_flag = False
             if self.wx and hasattr(self.wx, '_listener_thread'):
                 self.wx.StopListening()
+            if hasattr(self, 'task_queue') and self.task_queue:
+                self.task_queue.stop()
+            if hasattr(self, 'redis_manager') and self.redis_manager:
+                self.redis_manager.close()
             log(level="WARNING", message='siver_wxbot安全退出！！')
             return True
         except Exception as e:

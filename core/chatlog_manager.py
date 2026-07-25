@@ -3,6 +3,7 @@ import types
 import traceback
 import re
 import time
+import json
 
 from chatlog_client import ChatlogClient, ChatlogError
 from logger import log
@@ -12,6 +13,7 @@ class ChatlogManager:
     """
     Chatlog 模块管理
     负责通过 Chatlog API 轮询监听消息、处理消息、增强上下文等功能。
+    支持 Redis 缓存联系人数据，Redis 不可用时自动降级到内存缓存。
     """
 
     def __init__(self, bot):
@@ -20,8 +22,32 @@ class ChatlogManager:
         self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
         self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
+    def _get_wx_id(self):
+        """获取当前微信账号的唯一标识，用于构建 Redis Key"""
+        if hasattr(self.bot, 'message_store') and self.bot.message_store:
+            return self.bot.message_store.wx_id
+        return self.bot.wx.nickname if hasattr(self.bot, 'wx') and self.bot.wx else 'default'
+
+    def _get_contacts_key(self):
+        """生成联系人映射的 Redis Key，格式：wxbot:{wx_id}:contacts"""
+        return f"wxbot:{self._get_wx_id()}:contacts"
+
+    def _get_contacts_list_key(self):
+        """生成联系人列表的 Redis Key，格式：wxbot:{wx_id}:contacts:list"""
+        return f"wxbot:{self._get_wx_id()}:contacts:list"
+
+    def _is_redis_available(self):
+        """检查 Redis 是否可用"""
+        return hasattr(self.bot, 'redis_manager') and self.bot.redis_manager and self.bot.redis_manager.is_available()
+
     def _init_chatlog_client(self):
-        """初始化 Chatlog 客户端（若配置开启）"""
+        """
+        初始化 Chatlog 客户端（若配置开启）。
+        
+        启动时优先从 Redis 加载联系人缓存，若 Redis 中存在缓存则直接使用，
+        无需调用 Chatlog API。若 Redis 不可用或缓存不存在，则调用 refresh_chatlog_contacts
+        从 Chatlog API 获取联系人数据。
+        """
         if not self.config.chatlog_listen_switch:
             return
         
@@ -32,6 +58,14 @@ class ChatlogManager:
             )
             self.bot.chatlog_contact_map = {}
             self.bot.chatlog_last_seq = {}
+
+            if self._is_redis_available():
+                contacts_map = self._load_contacts_from_redis()
+                if contacts_map:
+                    self.bot.chatlog_contact_map = contacts_map
+                    log(message=f"Chatlog 客户端初始化成功，从 Redis 加载 {len(contacts_map)} 条联系人数据")
+                    return
+
             self.refresh_chatlog_contacts()
             log(message="Chatlog 客户端初始化成功")
         except ImportError:
@@ -41,62 +75,133 @@ class ChatlogManager:
             log(level="ERROR", message=f"Chatlog 客户端初始化失败: {e}")
             self.config.chatlog_listen_switch = False
 
+    def _load_contacts_from_redis(self):
+        """
+        从 Redis 加载联系人缓存数据。
+        
+        Returns:
+            dict: 联系人映射字典，key 为 wxid/remark，value 为联系人完整信息；
+                  若 Redis 不可用或无缓存数据则返回 None
+        """
+        try:
+            contacts_key = self._get_contacts_key()
+            contacts_list_key = self._get_contacts_list_key()
+
+            client = self.bot.redis_manager._client if hasattr(self.bot.redis_manager, '_client') else None
+            if not client:
+                return None
+
+            raw_data = client.hgetall(contacts_key)
+            if not raw_data:
+                return None
+
+            contacts_map = {}
+            for key, value in raw_data.items():
+                if isinstance(key, bytes):
+                    key = key.decode('utf-8')
+                if isinstance(value, bytes):
+                    value = value.decode('utf-8')
+                try:
+                    contacts_map[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    contacts_map[key] = value
+
+            log(message=f"成功从 Redis 加载 {len(contacts_map)} 条联系人数据")
+            return contacts_map
+        except Exception as e:
+            log(level="WARNING", message=f"从 Redis 加载联系人数据失败: {e}")
+            return None
+
+    def _save_contacts_to_redis(self, contacts_map):
+        """
+        将联系人数据保存到 Redis。
+        
+        Args:
+            contacts_map (dict): 联系人映射字典
+            
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            if not self._is_redis_available():
+                return False
+
+            contacts_key = self._get_contacts_key()
+            contacts_list_key = self._get_contacts_list_key()
+
+            client = self.bot.redis_manager._client if hasattr(self.bot.redis_manager, '_client') else None
+            if not client:
+                return False
+
+            pipeline = client.pipeline()
+            pipeline.delete(contacts_key)
+            pipeline.delete(contacts_list_key)
+
+            for key, contact in contacts_map.items():
+                serialized = json.dumps(contact, ensure_ascii=False)
+                pipeline.hset(contacts_key, key, serialized)
+
+            pipeline.execute()
+
+            log(message=f"成功将 {len(contacts_map)} 条联系人数据保存到 Redis")
+            return True
+        except Exception as e:
+            log(level="WARNING", message=f"保存联系人数据到 Redis 失败: {e}")
+            return False
+
     def refresh_chatlog_contacts(self):
         """
         刷新 Chatlog 联系人缓存。
-
-        调用 Chatlog API 获取所有联系人，构建 userName、nickName、alias、remark 的双向映射，
+        
+        调用 Chatlog API 获取所有联系人，构建 userName、remark 的映射，
         用于在关键词匹配失败时扩展匹配范围。
-
+        
+        刷新流程：
+        1. 调用 Chatlog API 获取联系人数据
+        2. 构建联系人映射字典
+        3. 优先更新 Redis 缓存（若 Redis 可用）
+        4. 更新内存中的 chatlog_contact_map
+        5. Redis 不可用时仅更新内存缓存，功能不受影响
+        
         映射逻辑：
-        - 将每个联系人的 wxid、nickName、alias、remark 四种标识互相映射
-        - 例如：wxid_xxx -> 昵称, 昵称 -> wxid_xxx, 备注 -> 昵称 等
-        - 这样当用户使用昵称搜索但系统存储的是 wxid 时，也能通过映射找到对应联系人
+        - 将每个联系人的 wxid、remark 映射到完整联系人信息
+        - 例如：wxid_xxx -> contact, remark -> contact
+        - 这样当用户使用备注名搜索但系统存储的是 wxid 时，也能通过映射找到对应联系人
         """
-        # 检查 Chatlog 客户端是否已初始化，未初始化则直接返回
         if not self.bot.chatlog_client:
             return
 
         try:
-            # 调用 Chatlog API 搜索所有联系人
             contacts = self.bot.chatlog_client.search_contact(is_friend=1)
 
-            # 没有获取到联系人数据则直接返回
             if not contacts:
                 return
 
-            # 初始化新的联系人映射字典
             new_map = {}
 
             contacts_items = contacts.get('items', [])
 
-            # 遍历所有联系人项
             for contact in contacts_items:
-                # 提取联系人的四种标识信息
-                wxid = contact.get('userName', '')  # 微信内部 ID
-                nickname = contact.get('nickName', '')  # 昵称
-                alias = contact.get('alias', '')  # 微信号（自定义 ID）
-                remark = contact.get('remark', '')  # 备注名
-
-                # 将四种标识放入列表，便于后续构建双向映射
-                # identifiers = [wxid, nickname, alias, remark]
+                wxid = contact.get('userName', '')
+                nickname = contact.get('nickName', '')
+                alias = contact.get('alias', '')
+                remark = contact.get('remark', '')
 
                 new_map[wxid] = contact
 
-                if not remark:
+                if remark:
                     new_map[remark] = contact
 
-            # 更新联系人映射缓存，替换旧数据
+            if self._is_redis_available():
+                self._save_contacts_to_redis(new_map)
+
             self.bot.chatlog_contact_map = new_map
 
-            # 记录日志，显示更新的记录数量
             log(message=f"Chatlog 联系人缓存已更新，共 {len(contacts_items)} 条记录")
 
         except ChatlogError as e:
-            # Chatlog API 调用失败，记录错误日志
             log(level="ERROR", message=f"刷新 Chatlog 联系人失败: {e}")
         except Exception as e:
-            # 处理过程中发生其他异常，记录错误日志
             log(level="ERROR", message=f"刷新 Chatlog 联系人异常: {e}")
 
     def _enrich_context_with_chatlog(self, chat_name, base_history=None):

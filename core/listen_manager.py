@@ -308,14 +308,12 @@ class ListenManager:
         if self.bot.wx is None:
             self.bot.wx = WeChat()
 
+        if self.bot.message_store and hasattr(self.bot.wx, 'nickname') and self.bot.wx.nickname:
+            self.bot.message_store.wx_id = self.bot.wx.nickname
+
         if self.bot.memory_manager is None:
             from core.memory_manager import MemoryManager
-            import os
-            import sys
-            _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
-            base_path = os.path.join(_base, 'memory')
-            wx_id = self.bot.wx.nickname if hasattr(self.bot.wx, 'nickname') else 'default'
-            self.bot.memory_manager = MemoryManager(wx_id, base_path)
+            self.bot.memory_manager = MemoryManager(self.bot.message_store)
 
         expected_chats = []
 

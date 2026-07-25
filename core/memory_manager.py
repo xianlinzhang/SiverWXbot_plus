@@ -1,201 +1,108 @@
 import os
 import json
-import hashlib
 import threading
 from datetime import datetime
-import re
 from logger import log
 
 
 class MemoryManager:
     """
-    对话记忆管理类
-    按窗口分文件存储收发消息，并在 AI 请求时提供历史上下文。
-    存储路径：{base_path}/{wx_id}/{storage_name}/{storage_name}_memory.json
+    对话记忆管理类（代理模式）
+    作为 MessageStore 的代理，提供兼容的 API 接口。
+    所有存储操作委托给 MessageStore，间接获得 Redis 支持。
     """
 
-    WINDOWS_RESERVED_NAMES = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    }
-    INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+    def __init__(self, message_store):
+        """
+        初始化记忆管理器（代理模式）
 
-    def __init__(self, wx_id, base_path):
-        self.wx_id     = wx_id
-        self.base_path = base_path  # 根目录：{base_dir}/memory/
-        self._locks    = {}         # chat_name -> threading.Lock()
+        :param message_store: MessageStore 实例，所有存储操作委托给它
+        """
+        self.message_store = message_store
+        self._locks = {}
 
     def _get_lock(self, chat_name):
+        """获取指定会话的锁，确保线程安全"""
         if chat_name not in self._locks:
             self._locks[chat_name] = threading.Lock()
         return self._locks[chat_name]
 
-    @classmethod
-    def _is_windows_reserved_name(cls, name):
-        stem = name.split('.', 1)[0].upper()
-        return stem in cls.WINDOWS_RESERVED_NAMES
-
-    @staticmethod
-    def _hash_storage_name(name):
-        raw_name = str(name)
-        return "hash" + hashlib.sha256(raw_name.encode('utf-8')).hexdigest()
-
-    @classmethod
-    def _resolve_storage_name(cls, chat_name):
-        """
-        将微信窗口名转换为 Windows 可用的目录/文件名前缀。
-        非法符号直接剔除；剔除后为空或仍不适合作为 Windows 名称时使用 hash 前缀兜底。
-        """
-        raw_name = str(chat_name)
-        storage_name = cls.INVALID_FILENAME_CHARS_RE.sub('', raw_name)
-        storage_name = storage_name.strip().rstrip('. ')
-        if (
-            not storage_name
-            or storage_name in ('.', '..')
-            or cls._is_windows_reserved_name(storage_name)
-            or len(storage_name) > 120
-        ):
-            return cls._hash_storage_name(raw_name), True
-        return storage_name, storage_name != raw_name
-
-    @staticmethod
-    def _write_original_name(dir_path, chat_name):
-        name_path = os.path.join(dir_path, 'name.json')
-        try:
-            with open(name_path, 'w', encoding='utf-8') as f:
-                json.dump({"name": str(chat_name)}, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log(level="WARNING", message=f"写入记忆原始名称记录失败: {e}")
-
-    def _get_memory_path(self, chat_name):
-        """返回记忆文件路径，并确保目录存在"""
-        storage_name, should_write_name = self._resolve_storage_name(chat_name)
-        dir_path = os.path.join(self.base_path, self.wx_id, storage_name)
-        os.makedirs(dir_path, exist_ok=True)
-        if should_write_name:
-            self._write_original_name(dir_path, chat_name)
-        return os.path.join(dir_path, f"{storage_name}_memory.json")
-
-    @staticmethod
-    def _normalize_message_time(message_time=None):
-        """将外部传入的时间统一转成记忆文件使用的字符串格式。"""
-        if isinstance(message_time, datetime):
-            return message_time.strftime("%Y/%m/%d %H:%M:%S")
-        if isinstance(message_time, str):
-            message_time = message_time.strip()
-            if message_time:
-                return message_time
-        return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-
-    @staticmethod
-    def _parse_message_time(message_time):
-        """解析记忆时间字符串；解析失败时返回 None，避免影响主流程。"""
-        if not message_time:
-            return None
-        try:
-            return datetime.strptime(str(message_time), "%Y/%m/%d %H:%M:%S")
-        except Exception:
-            return None
-
-    def _append_message_in_order(self, messages, entry, recent_count=5):
-        """在最近 recent_count 条范围内按时间插入，修正回调并发导致的乱序写入。"""
-        current_dt = self._parse_message_time(entry.get("time"))
-        if current_dt is None or not messages:
-            messages.append(entry)
-            return messages
-
-        recent_start = max(0, len(messages) - recent_count)
-        recent_messages = messages[recent_start:]
-        has_later_recent = False
-        for item in recent_messages:
-            item_dt = self._parse_message_time(item.get("time"))
-            if item_dt and item_dt > current_dt:
-                has_later_recent = True
-                break
-
-        if not has_later_recent:
-            messages.append(entry)
-            return messages
-
-        # 只重排尾部最近几条，既能修正本次乱序，也避免每次写入都全量排序。
-        sortable_recent = []
-        for idx, item in enumerate(recent_messages):
-            item_dt = self._parse_message_time(item.get("time")) or datetime.max
-            sortable_recent.append((item_dt, idx, item))
-        sortable_recent.append((current_dt, len(recent_messages), entry))
-        sortable_recent.sort(key=lambda x: (x[0], x[1]))
-        messages[recent_start:] = [item for _, _, item in sortable_recent]
-        return messages
-
-    def save_message(self, chat_name, sender, content, msg_type, msg_attr, max_count, message_time=None):
-        """写入一条消息到记忆文件，超出 max_count 时删除最旧的"""
-        path  = self._get_memory_path(chat_name)
-        entry_time = self._normalize_message_time(message_time)
-        entry = {
-            "time":    entry_time,
-            "type":    str(msg_type),
-            "attr":    str(msg_attr),
-            "sender":  str(sender),
-            "content": str(content),
-        }
-        with self._get_lock(chat_name):
-            if os.path.exists(path):
-                try:
-                    with open(path, 'r', encoding='utf-8') as f:
-                        messages = json.load(f)
-                    if not isinstance(messages, list):
-                        messages = []
-                except Exception:
-                    messages = []
-            else:
-                messages = []
-            messages = self._append_message_in_order(messages, entry, recent_count=5)
-            if len(messages) > max_count:
-                messages = messages[-max_count:]
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(messages, f, ensure_ascii=False, indent=2)
-
     def get_messages(self, chat_name, count):
-        """读取最近 count 条记忆，返回 list"""
-        path = self._get_memory_path(chat_name)
-        if not os.path.exists(path):
+        """
+        获取最近 count 条记忆，返回 AI 兼容格式的消息历史
+
+        :param chat_name: 会话名称
+        :param count: 返回消息数量
+        :return: 消息历史列表，格式：[{"time": "xxx", "type": "xxx", "attr": "xxx", "sender": "xxx", "content": "xxx"}]
+        """
+        if not self.message_store:
             return []
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                messages = json.load(f)
-            if isinstance(messages, list):
-                return messages[-count:]
-        except Exception:
-            pass
-        return []
+            return self.message_store.get_history(chat_name, count)
+        except Exception as e:
+            log(level="WARNING", message=f"MemoryManager 获取消息失败: {e}")
+            return []
+
+    def save_message(self, chat_name, sender, content, msg_type, msg_attr, max_count, message_time=None):
+        """
+        保存一条消息到记忆存储（委托给 MessageStore）
+
+        :param chat_name: 会话名称
+        :param sender: 发送者
+        :param content: 消息内容
+        :param msg_type: 消息类型（text/image/unknown）
+        :param msg_attr: 消息属性（friend/group/self/system）
+        :param max_count: 最大存储消息数（已由 MessageStore 内部管理，此处保留兼容）
+        :param message_time: 消息时间（可选，默认当前时间）
+        """
+        if not self.message_store:
+            return
+        try:
+            self.message_store.save_message(
+                chat_name=chat_name,
+                sender=sender,
+                content=content,
+                msg_type=msg_type,
+                msg_attr=msg_attr,
+                seq=0,
+                message_time=message_time
+            )
+        except Exception as e:
+            log(level="WARNING", message=f"MemoryManager 保存消息失败: {e}")
 
     def clear_messages(self, chat_name):
-        """清空指定会话的对话记忆"""
-        path = self._get_memory_path(chat_name)
-        with self._get_lock(chat_name):
-            try:
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump([], f, ensure_ascii=False)
-            except Exception:
-                pass
+        """
+        清空指定会话的对话记忆（委托给 MessageStore）
+
+        :param chat_name: 会话名称
+        """
+        if not self.message_store:
+            return
+        try:
+            if hasattr(self.message_store, 'clear_messages'):
+                self.message_store.clear_messages(chat_name)
+            else:
+                log(level="WARNING", message="MessageStore 未实现 clear_messages 方法")
+        except Exception as e:
+            log(level="WARNING", message=f"MemoryManager 清空消息失败: {e}")
 
     def clear_all_messages(self):
-        """清空所有会话的对话记忆，返回清除的会话数"""
-        count = 0
-        base = os.path.join(self.base_path, self.wx_id)
-        if not os.path.exists(base):
-            return count
-        for chat_dir in os.listdir(base):
-            memory_file = os.path.join(base, chat_dir, f"{chat_dir}_memory.json")
-            if os.path.exists(memory_file):
-                try:
-                    with open(memory_file, 'w', encoding='utf-8') as f:
-                        json.dump([], f, ensure_ascii=False)
-                    count += 1
-                except Exception:
-                    pass
-        return count
+        """
+        清空所有会话的对话记忆（委托给 MessageStore）
+
+        :return: 清除的会话数
+        """
+        if not self.message_store:
+            return 0
+        try:
+            if hasattr(self.message_store, 'clear_all_messages'):
+                return self.message_store.clear_all_messages()
+            else:
+                log(level="WARNING", message="MessageStore 未实现 clear_all_messages 方法")
+                return 0
+        except Exception as e:
+            log(level="WARNING", message=f"MemoryManager 清空所有消息失败: {e}")
+            return 0
 
 
 class ReplyCountStore:

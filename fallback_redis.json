@@ -1,0 +1,42 @@
+{
+  "wxbot:default:tasks:72294004-f03e-4c2f-a588-6ca94af26d06": {
+    "id": "72294004-f03e-4c2f-a588-6ca94af26d06",
+    "type": "send_msg",
+    "priority": 5,
+    "status": "running",
+    "params": {
+      "who": "主号",
+      "msg": "您好！欢迎使用同城信息服务，我是您的客服小林。😊 请问今天有什么可以帮您的吗？无论是本地生活咨询、便民服务还是其他需求，都可以告诉我哦~",
+      "msg_id": null,
+      "user_key": "主号",
+      "api_error_reply": false
+    },
+    "result": null,
+    "error": null,
+    "create_time": "2026-07-25T15:42:50.325937",
+    "start_time": "2026-07-25T15:42:50.530598",
+    "end_time": null,
+    "callback": null
+  },
+  "wxbot:default:tasks:pending": [],
+  "wxbot:default:tasks:current": "7e855037-63b4-4ec6-9489-c5e6e716b7d5",
+  "wxbot:default:tasks:7e855037-63b4-4ec6-9489-c5e6e716b7d5": {
+    "id": "7e855037-63b4-4ec6-9489-c5e6e716b7d5",
+    "type": "send_msg",
+    "priority": 5,
+    "status": "running",
+    "params": {
+      "who": "主号",
+      "msg": "您好！关于车辆推荐，方便告知您的具体需求吗？例如：\n1. **预算范围**（如10万内/15-25万等）\n2. **车型偏好**（轿车/SUV/新能源等）\n3. **主要用途**（通勤代步/家庭出行/长途驾驶等）\n4. **燃油类型**（汽油/混动/纯电等）\n\n提供更多信息后，我可以为您匹配更合适的车型哦！ 😊",
+      "msg_id": null,
+      "user_key": "主号",
+      "api_error_reply": false
+    },
+    "result": null,
+    "error": null,
+    "create_time": "2026-07-25T15:42:56.914003",
+    "start_time": "2026-07-25T15:43:23.536956",
+    "end_time": null,
+    "callback": null
+  }
+}

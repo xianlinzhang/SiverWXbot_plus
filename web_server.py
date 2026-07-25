@@ -2016,5 +2016,824 @@ def main():
     finally:
         log('INFO', '服务器已停止')
 
+# ----------------------------------------------------------
+# 任务队列相关 API
+# ----------------------------------------------------------
+
+@app.route('/api/tasks', methods=['GET'])
+@login_required
+def get_tasks():
+    """
+    获取任务队列完整信息（聚合接口）
+    
+    返回队列状态、待执行任务列表和任务历史的完整信息，方便前端一次性加载。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        status = bot.task_queue.get_queue_status()
+        pending_tasks = bot.task_queue.get_pending_tasks()
+        history = bot.task_queue.get_history(limit=50)
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'pending_count': status.get('pending_count', 0),
+                'current_task': status.get('current_task', None),
+                'success_count': status.get('success_count', 0),
+                'failed_count': status.get('failed_count', 0),
+                'pending_tasks': [task.to_dict() for task in pending_tasks],
+                'task_history': [task.to_dict() for task in history]
+            }
+        })
+    except Exception as e:
+        log('ERROR', f'获取任务队列完整信息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+@app.route('/api/tasks/status', methods=['GET'])
+@login_required
+def get_tasks_status():
+    """
+    获取任务队列状态
+    
+    返回队列状态信息，包含待执行任务数、当前正在执行的任务、历史统计数据。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        status = bot.task_queue.get_queue_status()
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': status
+        })
+    except Exception as e:
+        log('ERROR', f'获取任务队列状态失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/tasks/pending', methods=['GET'])
+@login_required
+def get_pending_tasks():
+    """
+    获取待执行任务列表
+    
+    获取队列中所有待执行的任务，按优先级排序（高优先级在前）。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        tasks = bot.task_queue.get_pending_tasks()
+        tasks_data = [task.to_dict() for task in tasks]
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': tasks_data
+        })
+    except Exception as e:
+        log('ERROR', f'获取待执行任务列表失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/tasks/history', methods=['GET'])
+@login_required
+def get_tasks_history():
+    """
+    获取任务历史记录
+    
+    获取已完成或失败的任务历史记录，按时间倒序排列。
+    
+    Args:
+        limit (int, optional): 返回数量限制，默认50
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        limit = request.args.get('limit', 50)
+        try:
+            limit = int(limit)
+        except ValueError:
+            limit = 50
+        
+        tasks = bot.task_queue.get_history(limit=limit)
+        tasks_data = [task.to_dict() for task in tasks]
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': tasks_data
+        })
+    except Exception as e:
+        log('ERROR', f'获取任务历史记录失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/tasks/cancel', methods=['POST'])
+@login_required
+def cancel_task():
+    """
+    取消指定任务
+    
+    取消队列中指定的待执行任务。
+    
+    Args:
+        task_id (str): 任务ID
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'code': 400, 'message': '无效的请求数据', 'data': None}), 400
+        
+        task_id = data.get('task_id')
+        if not task_id:
+            return jsonify({'code': 400, 'message': 'task_id 参数不能为空', 'data': None}), 400
+        
+        success = bot.task_queue.cancel_task(task_id)
+        if success:
+            return jsonify({
+                'code': 0,
+                'message': '任务取消成功',
+                'data': {'task_id': task_id}
+            })
+        else:
+            return jsonify({
+                'code': 404,
+                'message': '任务不存在或已执行',
+                'data': None
+            }), 404
+    except Exception as e:
+        log('ERROR', f'取消任务失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/tasks/clear', methods=['POST'])
+@login_required
+def clear_tasks_queue():
+    """
+    清空任务队列
+    
+    清空队列中所有待执行的任务。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        count = bot.task_queue.clear_queue()
+        return jsonify({
+            'code': 0,
+            'message': f'队列已清空，共取消 {count} 个任务',
+            'data': {'cleared_count': count}
+        })
+    except Exception as e:
+        log('ERROR', f'清空任务队列失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+# ----------------------------------------------------------
+# 消息管理相关 API
+# ----------------------------------------------------------
+
+@app.route('/api/messages', methods=['GET'])
+@login_required
+def get_messages():
+    """
+    获取消息管理完整信息（聚合接口）
+    
+    返回待确认消息列表和消息统计的完整信息，方便前端一次性加载。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        pending = bot.message_store.get_pending_confirm()
+        stats = bot.message_store.get_stats()
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'pending_confirm': pending,
+                'pending_count': stats.get('pending_confirm', 0),
+                'processed_count': stats.get('processed', 0),
+                'replied_count': stats.get('replied', 0),
+                'total_count': stats.get('total', 0)
+            }
+        })
+    except Exception as e:
+        log('ERROR', f'获取消息管理完整信息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+@app.route('/api/messages/pending_confirm', methods=['GET'])
+@login_required
+def get_pending_confirm_messages():
+    """
+    获取待确认消息列表
+    
+    获取所有需要人工确认后才能回复的消息列表。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        messages = bot.message_store.get_pending_confirm()
+        messages_data = [msg.to_dict() for msg in messages]
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': messages_data
+        })
+    except Exception as e:
+        log('ERROR', f'获取待确认消息列表失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/messages/confirm', methods=['POST'])
+@login_required
+def confirm_message():
+    """
+    确认消息
+    
+    确认指定的待确认消息，同意进行回复。
+    
+    Args:
+        chat_name (str): 会话名称
+        message_id (str): 消息ID
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'code': 400, 'message': '无效的请求数据', 'data': None}), 400
+        
+        chat_name = data.get('chat_name')
+        message_id = data.get('message_id')
+        
+        if not chat_name or not message_id:
+            return jsonify({'code': 400, 'message': 'chat_name 和 message_id 参数不能为空', 'data': None}), 400
+        
+        record = bot.message_store.confirm_message(chat_name, message_id)
+        if record:
+            return jsonify({
+                'code': 0,
+                'message': '消息确认成功',
+                'data': record.to_dict()
+            })
+        else:
+            return jsonify({
+                'code': 404,
+                'message': '消息不存在',
+                'data': None
+            }), 404
+    except Exception as e:
+        log('ERROR', f'确认消息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/messages/reject', methods=['POST'])
+@login_required
+def reject_message():
+    """
+    拒绝消息
+    
+    拒绝指定的待确认消息，不进行回复。
+    
+    Args:
+        chat_name (str): 会话名称
+        message_id (str): 消息ID
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'code': 400, 'message': '无效的请求数据', 'data': None}), 400
+        
+        chat_name = data.get('chat_name')
+        message_id = data.get('message_id')
+        
+        if not chat_name or not message_id:
+            return jsonify({'code': 400, 'message': 'chat_name 和 message_id 参数不能为空', 'data': None}), 400
+        
+        record = bot.message_store.reject_message(chat_name, message_id)
+        if record:
+            return jsonify({
+                'code': 0,
+                'message': '消息已拒绝',
+                'data': record.to_dict()
+            })
+        else:
+            return jsonify({
+                'code': 404,
+                'message': '消息不存在',
+                'data': None
+            }), 404
+    except Exception as e:
+        log('ERROR', f'拒绝消息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/messages/search', methods=['GET'])
+@login_required
+def search_messages():
+    """
+    搜索消息
+    
+    根据关键词搜索消息记录。
+    
+    Args:
+        keyword (str): 搜索关键词
+        chat_name (str, optional): 会话名称（不指定则搜索所有会话）
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        keyword = request.args.get('keyword', '').strip()
+        chat_name = request.args.get('chat_name', '').strip()
+        
+        if not keyword:
+            return jsonify({'code': 400, 'message': 'keyword 参数不能为空', 'data': None}), 400
+        
+        chat_name_param = chat_name if chat_name else None
+        messages = bot.message_store.search_messages(keyword, chat_name_param)
+        messages_data = [msg.to_dict() for msg in messages]
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': messages_data
+        })
+    except Exception as e:
+        log('ERROR', f'搜索消息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/messages/stats', methods=['GET'])
+@login_required
+def get_messages_stats():
+    """
+    获取消息统计
+    
+    获取消息存储的统计信息，包括各状态消息数量。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        stats = {
+            'pending': 0,
+            'processed': 0,
+            'replied': 0,
+            'confirmed': 0,
+            'rejected': 0,
+            'total': 0
+        }
+        
+        base_dir = os.path.join(bot.message_store.base_path, bot.message_store.wx_id)
+        if os.path.exists(base_dir):
+            for storage_dir in os.listdir(base_dir):
+                storage_path = os.path.join(base_dir, storage_dir)
+                if os.path.isdir(storage_path):
+                    msg_file = os.path.join(storage_path, f"{storage_dir}_messages.json")
+                    if os.path.exists(msg_file):
+                        try:
+                            with open(msg_file, 'r', encoding='utf-8') as f:
+                                messages = json.load(f)
+                            if isinstance(messages, list):
+                                for msg_data in messages:
+                                    status = msg_data.get('status', 'pending')
+                                    if status in stats:
+                                        stats[status] += 1
+                                    stats['total'] += 1
+                        except Exception:
+                            continue
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': stats
+        })
+    except Exception as e:
+        log('ERROR', f'获取消息统计失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/messages/history', methods=['GET'])
+@login_required
+def get_messages_history():
+    """
+    获取消息历史（AI兼容格式）
+    
+    获取指定联系人的消息历史，格式与 MemoryManager 兼容。
+    
+    Args:
+        chat_name (str): 会话名称或 wxid
+        wxid (str): 微信号（可选，用于补充查询）
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        chat_name = request.args.get('chat_name', '').strip()
+        wxid = request.args.get('wxid', '').strip()
+        
+        if not chat_name:
+            return jsonify({'code': 400, 'message': 'chat_name 参数不能为空', 'data': None}), 400
+        
+        history = bot.message_store.get_history(chat_name, wxid=wxid)
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': history
+        })
+    except Exception as e:
+        log('ERROR', f'获取消息历史失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/send_message', methods=['POST'])
+@login_required
+def send_message():
+    """
+    发送消息到指定联系人
+    
+    通过任务队列发送消息到指定联系人。
+    
+    Args:
+        chat_name (str): 会话名称
+        content (str): 消息内容
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'task_queue'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        data = request.get_json() if request.is_json else request.form
+        chat_name = data.get('chat_name', '').strip()
+        content = data.get('content', '').strip()
+        
+        if not chat_name:
+            return jsonify({'code': 400, 'message': 'chat_name 参数不能为空', 'data': None}), 400
+        
+        if not content:
+            return jsonify({'code': 400, 'message': 'content 参数不能为空', 'data': None}), 400
+        
+        task_id = bot.task_queue.submit('send_message', {'chat_name': chat_name, 'content': content})
+        return jsonify({
+            'code': 0,
+            'message': '消息已加入发送队列',
+            'data': {'task_id': task_id}
+        })
+    except Exception as e:
+        log('ERROR', f'发送消息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+# ----------------------------------------------------------
+# Redis 管理相关 API
+# ----------------------------------------------------------
+
+@app.route('/api/redis/status', methods=['GET'])
+@login_required
+def get_redis_status():
+    """
+    获取 Redis 连接状态
+    
+    获取当前 Redis 连接状态和配置信息。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'redis_manager'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        rm = bot.redis_manager
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'host': rm.config.get('host', 'unknown'),
+                'port': rm.config.get('port', 'unknown'),
+                'db': rm.config.get('db', 'unknown'),
+                'available': rm.is_available(),
+                'mode': 'redis' if rm.is_available() else 'local_fallback'
+            }
+        })
+    except Exception as e:
+        log('ERROR', f'获取 Redis 状态失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/redis/stats', methods=['GET'])
+@login_required
+def get_redis_stats():
+    """
+    获取 Redis 统计信息
+    
+    获取 Redis 中存储的数据统计信息。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'redis_manager'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        rm = bot.redis_manager
+        if not rm.is_available():
+            return jsonify({'code': 0, 'message': 'success', 'data': {'message': 'Redis 不可用，使用本地存储'}})
+        
+        client = rm._client if hasattr(rm, '_client') else None
+        if not client:
+            return jsonify({'code': 0, 'message': 'success', 'data': {'message': 'Redis 客户端未初始化'}})
+        
+        try:
+            keys = client.keys('wxbot:*')
+            keys_count = len(keys)
+            
+            tasks_keys = client.keys('wxbot:*:tasks:*')
+            messages_keys = client.keys('wxbot:*:messages:*')
+            contacts_keys = client.keys('wxbot:*:contacts:*')
+            memory_keys = client.keys('wxbot:*:memory:*')
+            
+            return jsonify({
+                'code': 0,
+                'message': 'success',
+                'data': {
+                    'keys_count': keys_count,
+                    'tasks': len(tasks_keys),
+                    'messages': len(messages_keys),
+                    'contacts': len(contacts_keys),
+                    'memory': len(memory_keys)
+                }
+            })
+        except Exception as e:
+            log('WARNING', f'获取 Redis 统计失败: {e}')
+            return jsonify({'code': 0, 'message': 'success', 'data': {'message': f'获取统计失败: {str(e)}'}})
+    except Exception as e:
+        log('ERROR', f'获取 Redis 统计信息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+# ----------------------------------------------------------
+# 联系人管理相关 API
+# ----------------------------------------------------------
+
+@app.route('/api/contacts', methods=['GET'])
+@login_required
+def get_contacts():
+    """
+    获取联系人管理完整信息（聚合接口）
+    
+    返回联系人列表和统计信息，方便前端一次性加载。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'chatlog_client') or not bot.chatlog_client:
+            return jsonify({'code': 400, 'message': '机器人未启动或未开启 Chatlog 模式', 'data': None}), 400
+        
+        contacts_result = bot.chatlog_client.search_contact(is_friend=1)
+        contacts = contacts_result.get('items', []) if isinstance(contacts_result, dict) else []
+        
+        total = len(contacts)
+        friends = sum(1 for c in contacts if isinstance(c, dict) and c.get('type') == 'friend')
+        groups = sum(1 for c in contacts if isinstance(c, dict) and c.get('type') == 'group')
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'contacts': contacts,
+                'total_count': total,
+                'friend_count': friends,
+                'group_count': groups
+            }
+        })
+    except Exception as e:
+        log('ERROR', f'获取联系人管理完整信息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+@app.route('/api/contacts/list', methods=['GET'])
+@login_required
+def get_contacts_list():
+    """
+    获取联系人列表
+    
+    获取联系人列表，支持分页。
+    
+    Args:
+        page (int, optional): 页码，默认1
+        page_size (int, optional): 每页数量，默认20
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'chatlog_manager'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        page = request.args.get('page', 1)
+        page_size = request.args.get('page_size', 20)
+        
+        try:
+            page = max(1, int(page))
+            page_size = max(1, min(100, int(page_size)))
+        except ValueError:
+            page = 1
+            page_size = 20
+        
+        contacts_map = getattr(bot, 'chatlog_contact_map', {})
+        contacts = list(contacts_map.values())
+        
+        total = len(contacts)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated = contacts[start:end]
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': {
+                'list': paginated,
+                'page': page,
+                'page_size': page_size,
+                'total': total,
+                'total_pages': (total + page_size - 1) // page_size
+            }
+        })
+    except Exception as e:
+        log('ERROR', f'获取联系人列表失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/contacts/search', methods=['GET'])
+@login_required
+def search_contacts():
+    """
+    搜索联系人
+    
+    根据关键词搜索联系人。
+    
+    Args:
+        keyword (str): 搜索关键词
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'chatlog_manager'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        keyword = request.args.get('keyword', '').strip()
+        
+        if not keyword:
+            return jsonify({'code': 400, 'message': 'keyword 参数不能为空', 'data': None}), 400
+        
+        contacts_map = getattr(bot, 'chatlog_contact_map', {})
+        results = []
+        seen = set()
+        
+        for contact in contacts_map.values():
+            wxid = contact.get('userName', '')
+            if wxid in seen:
+                continue
+            seen.add(wxid)
+            
+            nickname = contact.get('nickName', '')
+            remark = contact.get('remark', '')
+            alias = contact.get('alias', '')
+            
+            if keyword in nickname or keyword in remark or keyword in alias:
+                results.append(contact)
+        
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': results
+        })
+    except Exception as e:
+        log('ERROR', f'搜索联系人失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/contacts/messages', methods=['GET'])
+@login_required
+def get_contact_messages():
+    """
+    获取联系人消息记录
+    
+    获取指定联系人的消息记录。
+    
+    Args:
+        chat_name (str): 会话名称
+        
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        chat_name = request.args.get('chat_name', '').strip()
+        
+        if not chat_name:
+            return jsonify({'code': 400, 'message': 'chat_name 参数不能为空', 'data': None}), 400
+        
+        messages = bot.message_store.get_all_messages(chat_name)
+        messages_data = [msg.to_dict() for msg in messages]
+        return jsonify({
+            'code': 0,
+            'message': 'success',
+            'data': messages_data
+        })
+    except Exception as e:
+        log('ERROR', f'获取联系人消息记录失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
+@app.route('/api/contacts/refresh', methods=['POST'])
+@login_required
+def refresh_contacts():
+    """
+    刷新联系人缓存
+    
+    调用 Chatlog API 刷新联系人缓存数据。
+    
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'chatlog_manager'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+        
+        bot.chatlog_manager.refresh_chatlog_contacts()
+        
+        contacts_map = getattr(bot, 'chatlog_contact_map', {})
+        count = len(contacts_map)
+        
+        return jsonify({
+            'code': 0,
+            'message': f'联系人缓存已刷新，共 {count} 条记录',
+            'data': {'contact_count': count}
+        })
+    except Exception as e:
+        log('ERROR', f'刷新联系人缓存失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
 if __name__ == '__main__':
     main()

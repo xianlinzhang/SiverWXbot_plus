@@ -17,7 +17,6 @@ class MessageHandler:
         self.bot = bot
         self.config = bot.config
         self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
-        self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def _get_chat_api(self, user_name):
         """获取私聊用户对应的 AI 接口实例（白名单模式查 chat_api_map，否则用默认接口）"""
@@ -162,14 +161,13 @@ class MessageHandler:
     def _chatlog_send_ai(self, chat_name, message, message_record=None):
         """
         Chatlog 模式下对私聊消息调用 AI 接口并发送回复。
-        集成消息存储和微信界面操作锁。
+        集成消息存储，发送操作通过任务队列异步执行。
 
         :param chat_name:      会话名称（备注名）
         :param message:        消息对象
         :param message_record: 已保存的消息记录（可选，避免重复保存）
-        :return:               发送结果
+        :return:               任务提交结果，True 表示成功提交，False 表示跳过
         """
-        result = True
         api_error_reply = False
         msg_id = None
 
@@ -264,36 +262,63 @@ class MessageHandler:
         else:
             parts = [reply]
 
-        send_success = False
-        try:
-            if self.wx_lock:
-                self.wx_lock.acquire(holder=f"_chatlog_send_ai_{chat_name}")
+        all_segments = []
+        for part in parts:
+            if len(part) >= 2000:
+                all_segments.extend(self.config.split_long_text(part))
+            else:
+                all_segments.append(part)
 
-            for part in parts:
-                self.config.human_delay()
-                if len(part) >= 2000:
-                    for segment in self.config.split_long_text(part):
-                        result = self.bot.wx.SendMsg(msg=segment, who=chat_name)
-                        send_success = send_success or self.bot.reply_count_store.was_send_success(result)
+        if not all_segments:
+            if self.message_store and msg_id:
+                self.message_store.set_message_status(chat_name, msg_id, "processed")
+            return True
+
+        final_reply = reply
+        final_msg_id = msg_id
+        final_chat_name = chat_name
+
+        def _send_msg_callback(success, result, params):
+            if self.message_store and final_msg_id and success:
+                self.message_store.bind_reply(
+                    final_chat_name,
+                    final_msg_id,
+                    final_reply,
+                    datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                )
+            elif self.message_store and final_msg_id:
+                self.message_store.set_message_status(final_chat_name, final_msg_id, "processed")
+
+            self.bot.msg_replied_count += 1
+
+        def _submit_segment(index):
+            if index >= len(all_segments):
+                _send_msg_callback(True, None, {})
+                return
+
+            segment = all_segments[index]
+            params = {
+                'who': chat_name,
+                'msg': segment,
+                'msg_id': msg_id,
+                'user_key': chat_name,
+                'api_error_reply': api_error_reply,
+            }
+
+            def _segment_callback(success, result, segment_params):
+                if success:
+                    _submit_segment(index + 1)
                 else:
-                    result = self.bot.wx.SendMsg(msg=part, who=chat_name)
-                    send_success = send_success or self.bot.reply_count_store.was_send_success(result)
-        finally:
-            if self.wx_lock:
-                self.wx_lock.release(holder=f"_chatlog_send_ai_{chat_name}")
+                    _send_msg_callback(False, result, segment_params)
 
-        if self.message_store and msg_id and send_success:
-            self.message_store.bind_reply(
-                chat_name,
-                msg_id,
-                reply,
-                datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+            self.bot.task_queue.submit(
+                task_type='send_msg',
+                params=params,
+                callback=_segment_callback,
             )
-        elif self.message_store and msg_id:
-            self.message_store.set_message_status(chat_name, msg_id, "processed")
 
-        self.bot.msg_replied_count += 1
-        return result
+        _submit_segment(0)
+        return True
 
     def message_handle_callback(self, msg, chat):
         """
@@ -563,14 +588,13 @@ class MessageHandler:
         """
         对私聊消息调用 AI 接口并发送回复。
         支持关键词优先匹配，超过 2000 字时自动分段发送。
-        集成消息存储和微信界面操作锁。
+        集成消息存储，发送操作通过任务队列异步执行。
 
         :param chat:           聊天窗口子对象
         :param message:        消息对象
         :param message_record: 已保存的消息记录（可选，避免重复保存）
-        :return:               发送结果
+        :return:               任务提交结果，True 表示成功提交，False 表示跳过
         """
-        result = True
         user_key = self._get_reply_count_key(chat, message)
         msg_id = None
 
@@ -683,39 +707,69 @@ class MessageHandler:
         else:
             parts = [reply]
 
-        send_success = False
-        try:
-            if self.wx_lock:
-                self.wx_lock.acquire(holder=f"wx_send_ai_{chat.who}")
+        all_segments = []
+        for part in parts:
+            if len(part) >= 2000:
+                all_segments.extend(self.config.split_long_text(part))
+            else:
+                all_segments.append(part)
 
-            for part in parts:
-                self.config.human_delay()
-                if len(part) >= 2000:
-                    for segment in self.config.split_long_text(part):
-                        result = chat.SendMsg(segment)
-                        send_success = send_success or self.bot.reply_count_store.was_send_success(result)
+        if not all_segments:
+            if self.message_store and msg_id:
+                self.message_store.set_message_status(chat.who, msg_id, "processed")
+            return True
+
+        final_reply = reply
+        final_msg_id = msg_id
+        final_user_key = user_key
+        final_api_error_reply = api_error_reply
+        final_api_error_should_mark = api_error_should_mark
+        final_who = chat.who
+
+        def _send_msg_callback(success, result, params):
+            if success and final_api_error_should_mark:
+                self.bot.reply_count_store.mark_api_err_notified(final_user_key)
+
+            if success and self.config.chat_max_round_switch and final_user_key and not final_api_error_reply:
+                self.bot.reply_count_store.increment_ai_count(final_user_key)
+
+            if self.message_store and final_msg_id and success:
+                self.message_store.bind_reply(
+                    final_who,
+                    final_msg_id,
+                    final_reply,
+                    datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                )
+            elif self.message_store and final_msg_id:
+                self.message_store.set_message_status(final_who, final_msg_id, "processed")
+
+            self.bot.msg_replied_count += 1
+
+        def _submit_segment(index):
+            if index >= len(all_segments):
+                _send_msg_callback(True, None, {})
+                return
+
+            segment = all_segments[index]
+            params = {
+                'who': chat.who,
+                'msg': segment,
+                'msg_id': msg_id,
+                'user_key': user_key,
+                'api_error_reply': api_error_reply,
+            }
+
+            def _segment_callback(success, result, segment_params):
+                if success:
+                    _submit_segment(index + 1)
                 else:
-                    result = chat.SendMsg(part)
-                    send_success = send_success or self.bot.reply_count_store.was_send_success(result)
-        finally:
-            if self.wx_lock:
-                self.wx_lock.release(holder=f"wx_send_ai_{chat.who}")
+                    _send_msg_callback(False, result, segment_params)
 
-        if send_success and api_error_should_mark:
-            self.bot.reply_count_store.mark_api_err_notified(user_key)
-
-        if send_success and self.config.chat_max_round_switch and user_key and not api_error_reply:
-            self.bot.reply_count_store.increment_ai_count(user_key)
-
-        if self.message_store and msg_id and send_success:
-            self.message_store.bind_reply(
-                chat.who,
-                msg_id,
-                reply,
-                datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+            self.bot.task_queue.submit(
+                task_type='send_msg',
+                params=params,
+                callback=_segment_callback,
             )
-        elif self.message_store and msg_id:
-            self.message_store.set_message_status(chat.who, msg_id, "processed")
 
-        self.bot.msg_replied_count += 1
-        return result
+        _submit_segment(0)
+        return True
