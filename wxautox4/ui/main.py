@@ -25,6 +25,8 @@ import sys
 
 from wxautox4.utils.tools import wxlog_debug_control
 
+from wxautox4.utils.account import get_account_from_process
+
 
 class WeChatSubWnd(BaseUISubWnd):
     _ui_cls_name: str = 'mmui::FramelessMainWindow'
@@ -146,6 +148,11 @@ class WeChatMainWnd(WeChatSubWnd):
             for index, (hwnd, clsname, winname) in enumerate(wxs):
                 self._setup_ui(hwnd)
                 if self.control.ClassName == self._ui_cls_name:
+                    # 获取单个账号
+                    account = get_account_from_process(hwnd)
+                    print(account)
+                    if account is not None and account.wxid:
+                        self.nickname = account.wxid
                     break
                 elif index+1 == len(wxs):
                     raise Exception(f'未找到微信窗口：{nickname}')

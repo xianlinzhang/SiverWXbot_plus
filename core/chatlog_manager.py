@@ -4,8 +4,10 @@ import traceback
 import re
 import time
 import json
+from typing import Optional
 
 from chatlog_client import ChatlogClient, ChatlogError
+from core.message_store import MessageStore
 from logger import log
 
 
@@ -19,7 +21,7 @@ class ChatlogManager:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
-        self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
+        self.message_store: Optional[MessageStore] = bot.message_store if hasattr(bot, 'message_store') else None
         self.wx_lock = bot.wx_lock if hasattr(bot, 'wx_lock') else None
 
     def _get_wx_id(self):
@@ -87,24 +89,9 @@ class ChatlogManager:
             contacts_key = self._get_contacts_key()
             contacts_list_key = self._get_contacts_list_key()
 
-            client = self.bot.redis_manager._client if hasattr(self.bot.redis_manager, '_client') else None
-            if not client:
+            contacts_map = self.bot.redis_manager.hgetall(contacts_key)
+            if not contacts_map:
                 return None
-
-            raw_data = client.hgetall(contacts_key)
-            if not raw_data:
-                return None
-
-            contacts_map = {}
-            for key, value in raw_data.items():
-                if isinstance(key, bytes):
-                    key = key.decode('utf-8')
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8')
-                try:
-                    contacts_map[key] = json.loads(value)
-                except json.JSONDecodeError:
-                    contacts_map[key] = value
 
             log(message=f"成功从 Redis 加载 {len(contacts_map)} 条联系人数据")
             return contacts_map
@@ -129,19 +116,10 @@ class ChatlogManager:
             contacts_key = self._get_contacts_key()
             contacts_list_key = self._get_contacts_list_key()
 
-            client = self.bot.redis_manager._client if hasattr(self.bot.redis_manager, '_client') else None
-            if not client:
-                return False
-
-            pipeline = client.pipeline()
-            pipeline.delete(contacts_key)
-            pipeline.delete(contacts_list_key)
+            self.bot.redis_manager.delete(contacts_key, contacts_list_key)
 
             for key, contact in contacts_map.items():
-                serialized = json.dumps(contact, ensure_ascii=False)
-                pipeline.hset(contacts_key, key, serialized)
-
-            pipeline.execute()
+                self.bot.redis_manager.hset(contacts_key, key, contact)
 
             log(message=f"成功将 {len(contacts_map)} 条联系人数据保存到 Redis")
             return True
@@ -282,6 +260,8 @@ class ChatlogManager:
             msg.content = msg_dict['contents'].get('md5', '')
         
         msg.id = msg_dict.get('seq', 0)
+        msg.seq = msg_dict.get('seq', 0)
+        msg.time = msg_dict.get('time', '')
         
         return msg
 
@@ -305,6 +285,18 @@ class ChatlogManager:
         )
         if not is_monitored:
             return True
+
+        if self.message_store:
+            msg_time = msg_dict.get('time', '') if isinstance(msg_dict, dict) else ''
+            self.message_store.save_message(
+                chat_name=chat_name,
+                sender=msg.sender,
+                content=msg.content,
+                msg_type=msg.type,
+                msg_attr=msg.attr,
+                seq=msg.id,
+                message_time=msg_time,
+            )
         
         if chat_name in self.config.group:
             if not self.config.group_switch:
@@ -499,7 +491,7 @@ class ChatlogManager:
                     continue
                 
                 try:
-                     # 调用 Chatlog API 获取该会话最近30天的消息（最多500条作为安全上限）
+                    # 调用 Chatlog API 获取该会话最近30天的消息（最多500条作为安全上限）
                     start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
                     end_date = datetime.now().strftime('%Y-%m-%d')
                     msgs = self.bot.chatlog_client.get_chatlog(talker=chat_name, time=f"{start_date}~{end_date}", limit=500)
@@ -508,6 +500,17 @@ class ChatlogManager:
                     if not msgs:
                         continue
                     
+                    # 自动刷新：把本次拉取的全部消息去重写入存储层（含 self 与已读历史）
+                    # 受 chatlog_message_auto_refresh 开关控制，失败不阻断主流程
+                    if getattr(self.config, 'chatlog_message_auto_refresh', True) and self.message_store:
+                        try:
+                            total_fetched, new_saved = self.message_store.refresh_messages_from_chatlog(
+                                chat_name, prefetched_msgs=msgs
+                            )
+                            log(message=f"自动刷新会话 [{chat_name}] 消息：拉取 {total_fetched} 条，新增 {new_saved} 条")
+                        except Exception as e:
+                            log(level="ERROR", message=f"自动刷新会话 [{chat_name}] 消息失败: {e}")
+                    
                     # 获取该会话上次处理到的最大 seq，用于过滤新消息
                     last_seq = self.bot.chatlog_last_seq.get(chat_name, 0)
                     
@@ -515,7 +518,7 @@ class ChatlogManager:
                     msgs.sort(key=lambda m: m.get('seq', 0))
                     
                     # 过滤出 isSelf=False 且 seq > last_seq 的消息（他人发送的新消息），取最新的 UnreadCount 项
-                    new_messages = [m for m in msgs if not m.get('isSelf', False) and m.get('seq', 0) > last_seq][-UnreadCount:]
+                    new_messages = [m for m in msgs if not m.get('isSelf', False)][-UnreadCount:]
                     
                     # 没有新消息则跳过
                     if not new_messages:

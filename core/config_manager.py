@@ -122,6 +122,10 @@ class WXBotConfig:
         self.chatlog_polling_interval = 10*60                           # Chatlog 轮询间隔（秒）
         self.chatlog_context_count = 20                                # Chatlog 上下文拉取条数
         self.chatlog_request_timeout = 5                               # Chatlog 请求超时时间（秒）
+        self.chatlog_message_refresh_days = 30                         # Chatlog 消息刷新拉取天数
+        self.chatlog_message_refresh_limit = 500                       # Chatlog 消息刷新拉取条数上限
+        self.chatlog_message_auto_refresh = True                       # Chatlog 监听循环自动刷新消息开关
+        self.chatlog_message_manual_refresh_cooldown = 60              # 手动刷新消息冷却时间（秒）
 
         # ---------- 消息存储配置 ----------
         self.chat_reply_confirm_switch = False                         # 私聊回复确认开关
@@ -591,6 +595,10 @@ class WXBotConfig:
             'chatlog_context_count': 20,
             'chatlog_request_timeout': 5,
             'chatlog_reply_delay': 0,
+            'chatlog_message_refresh_days': 30,
+            'chatlog_message_refresh_limit': 500,
+            'chatlog_message_auto_refresh': True,
+            'chatlog_message_manual_refresh_cooldown': 60,
         }
         _chatlog_needs_save = any(k not in self.config for k in _chatlog_defaults)
         for k, v in _chatlog_defaults.items():
@@ -606,6 +614,10 @@ class WXBotConfig:
         self.chatlog_context_count = max(1, int(self.config.get('chatlog_context_count', 20)))
         self.chatlog_request_timeout = max(1, int(self.config.get('chatlog_request_timeout', 5)))
         self.chatlog_reply_delay = int(self.config.get('chatlog_reply_delay', 0))
+        self.chatlog_message_refresh_days = max(1, int(self.config.get('chatlog_message_refresh_days', 30)))
+        self.chatlog_message_refresh_limit = max(1, int(self.config.get('chatlog_message_refresh_limit', 500)))
+        self.chatlog_message_auto_refresh = bool(self.config.get('chatlog_message_auto_refresh', True))
+        self.chatlog_message_manual_refresh_cooldown = max(0, int(self.config.get('chatlog_message_manual_refresh_cooldown', 60)))
 
         # 消息存储配置
         self.chat_reply_confirm_switch = bool(self.config.get('chat_reply_confirm_switch', False))

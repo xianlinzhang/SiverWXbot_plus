@@ -522,6 +522,64 @@ class WeChat(Chat, Listener):
             human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
         self._api._navigation_api.switch_to_settings_page()
 
+    def SendMoments(self, text: str = '', images: List[str] = None, privacy: str = 'public', tags: List[str] = None) -> WxResponse:
+        """
+        发送朋友圈
+        
+        Args:
+            text (str, optional): 朋友圈文字内容，默认空字符串
+            images (List[str], optional): 图片路径列表，默认None
+            privacy (str, optional): 可见范围，支持 public/friends_only/tagged/friends_except，默认public
+            tags (List[str], optional): 可见/不可见的标签列表，默认None
+            
+        Returns:
+            WxResponse: 发布结果
+        """
+        if images is None:
+            images = []
+        if tags is None:
+            tags = []
+            
+        return self.Moment.Publish(text=text, images=images)
+
+    def LikeMoment(self, moment_id: str) -> WxResponse:
+        """
+        点赞朋友圈动态
+        
+        Args:
+            moment_id: 朋友圈动态的发布者昵称或ID
+            
+        Returns:
+            WxResponse: 点赞结果
+        """
+        item = self.Moment.FindMomentByPublisher(moment_id)
+        if not item:
+            return WxResponse.failure(f'未找到发布者为 {moment_id} 的朋友圈动态')
+        return self.Moment.Like(item)
+
+    def GetMoments(self, count: int = 10) -> List[Dict]:
+        """
+        获取朋友圈动态列表
+        
+        Args:
+            count (int, optional): 获取数量，默认10条
+            
+        Returns:
+            List[Dict]: 朋友圈动态列表，每条包含 id, nickname, content, time, liked 等字段
+        """
+        items = self.Moment.GetMoments(refresh=True)
+        result = []
+        for item in items[:count]:
+            result.append({
+                'id': item.publisher,
+                'nickname': item.publisher,
+                'content': item.text,
+                'time': item.timestamp,
+                'liked': False,
+                'image_count': item.image_count,
+            })
+        return result
+
     def ShutDown(self):
         delete_update_files()
         os.system(f'taskkill /f /pid {self._api.pid}')

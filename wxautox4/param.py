@@ -84,7 +84,7 @@ class WxParam:
     PASTE_DELAY_MAX: float = 0.5
 
 class WxResponse(dict):
-    def __init__(self, status: str, message: str, data: dict = None):
+    def __init__(self, status: str, message: str = None, data: dict = None):
         super().__init__(status=status, message=message, data=data)
 
     def __str__(self):

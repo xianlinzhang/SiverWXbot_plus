@@ -220,6 +220,94 @@ class RedisManager:
                         count += 1
                 self._save_fallback_data()
                 result = count
+            elif method == 'keys':
+                pattern = args[0] if args else kwargs.get('pattern', '*')
+                if pattern == '*':
+                    result = list(self._fallback_data.keys())
+                else:
+                    import fnmatch
+                    result = [key for key in self._fallback_data.keys() if fnmatch.fnmatch(key, pattern)]
+            elif method == 'llen':
+                name = args[0] if args else kwargs.get('name')
+                result = len(self._fallback_data.get(name, []))
+            elif method == 'ltrim':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                start = args[1] if len(args) > 1 else kwargs.get('start', 0)
+                end = args[2] if len(args) > 2 else kwargs.get('end', -1)
+                if name in self._fallback_data and isinstance(self._fallback_data[name], list):
+                    data = self._fallback_data[name]
+                    if end < 0:
+                        end = len(data) + end
+                    self._fallback_data[name] = data[start:end + 1]
+                    self._save_fallback_data()
+                result = True
+            elif method == 'lrange':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                start = args[1] if len(args) > 1 else kwargs.get('start', 0)
+                end = args[2] if len(args) > 2 else kwargs.get('end', -1)
+                data = self._fallback_data.get(name, [])
+                if end < 0:
+                    end = len(data) + end
+                result = data[start:end + 1]
+            elif method == 'lindex':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                index = args[1] if len(args) > 1 else kwargs.get('index', 0)
+                data = self._fallback_data.get(name, [])
+                if 0 <= index < len(data):
+                    result = data[index]
+                else:
+                    result = None
+            elif method == 'lset':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                index = args[1] if len(args) > 1 else kwargs.get('index', 0)
+                value = args[2] if len(args) > 2 else kwargs.get('value')
+                if name in self._fallback_data and isinstance(self._fallback_data[name], list):
+                    data = self._fallback_data[name]
+                    if 0 <= index < len(data):
+                        data[index] = value
+                        self._save_fallback_data()
+                        result = True
+                    else:
+                        result = False
+                else:
+                    result = False
+            elif method == 'lrem':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                count = args[1] if len(args) > 1 else kwargs.get('count', 0)
+                value = args[2] if len(args) > 2 else kwargs.get('value')
+                if name in self._fallback_data and isinstance(self._fallback_data[name], list):
+                    data = self._fallback_data[name]
+                    if count == 0:
+                        original_len = len(data)
+                        self._fallback_data[name] = [v for v in data if v != value]
+                        result = original_len - len(self._fallback_data[name])
+                    elif count > 0:
+                        removed = 0
+                        i = 0
+                        while i < len(data) and removed < count:
+                            if data[i] == value:
+                                data.pop(i)
+                                removed += 1
+                            else:
+                                i += 1
+                        self._fallback_data[name] = data
+                        result = removed
+                    else:
+                        removed = 0
+                        i = len(data) - 1
+                        while i >= 0 and removed < abs(count):
+                            if data[i] == value:
+                                data.pop(i)
+                                removed += 1
+                            i -= 1
+                        self._fallback_data[name] = data
+                        result = removed
+                    self._save_fallback_data()
+                else:
+                    result = 0
+            elif method == 'hgetall':
+                name = args[0] if args else kwargs.get('name')
+                result = self._fallback_data.get(name, {})
             return result
 
     def is_available(self) -> bool:
@@ -352,6 +440,170 @@ class RedisManager:
 
         return self._execute_with_retry(_lpush)
 
+    def llen(self, name: str) -> int:
+        """
+        获取列表的长度
+
+        Args:
+            name: 列表名称
+
+        Returns:
+            int: 列表的长度
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('llen', name=name)
+
+        return self._execute_with_retry(self._client.llen, name)
+
+    def ltrim(self, name: str, start: int, end: int) -> bool:
+        """
+        修剪列表，只保留指定范围内的元素
+
+        Args:
+            name: 列表名称
+            start: 起始索引
+            end: 结束索引
+
+        Returns:
+            bool: 修剪是否成功
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('ltrim', name=name, start=start, end=end)
+
+        def _ltrim():
+            result = self._client.ltrim(name, start, end)
+            return result is not None
+
+        return self._execute_with_retry(_ltrim)
+
+    def lrange(self, name: str, start: int = 0, end: int = -1) -> List[Any]:
+        """
+        获取列表指定范围内的元素
+
+        Args:
+            name: 列表名称
+            start: 起始索引（默认0）
+            end: 结束索引（默认-1，表示最后一个元素）
+
+        Returns:
+            List[Any]: 元素列表
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('lrange', name=name, start=start, end=end)
+
+        def _lrange():
+            values = self._client.lrange(name, start, end)
+            result = []
+            for v in values:
+                if isinstance(v, bytes):
+                    v = v.decode('utf-8')
+                try:
+                    result.append(json.loads(v))
+                except json.JSONDecodeError:
+                    result.append(v)
+            return result
+
+        return self._execute_with_retry(_lrange)
+
+    def lindex(self, name: str, index: int) -> Optional[Any]:
+        """
+        获取列表指定索引位置的元素
+
+        Args:
+            name: 列表名称
+            index: 索引位置
+
+        Returns:
+            Optional[Any]: 指定位置的元素，如果不存在返回 None
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('lindex', name=name, index=index)
+
+        def _lindex():
+            value = self._client.lindex(name, index)
+            if value is not None:
+                if isinstance(value, bytes):
+                    value = value.decode('utf-8')
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return value
+            return None
+
+        return self._execute_with_retry(_lindex)
+
+    def lset(self, name: str, index: int, value: Any) -> bool:
+        """
+        设置列表指定索引位置的元素
+
+        Args:
+            name: 列表名称
+            index: 索引位置
+            value: 元素值
+
+        Returns:
+            bool: 设置是否成功
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('lset', name=name, index=index, value=value)
+
+        def _lset():
+            serialized = json.dumps(value) if isinstance(value, (dict, list)) else value
+            result = self._client.lset(name, index, serialized)
+            return result is not None
+
+        return self._execute_with_retry(_lset)
+
+    def lrem(self, name: str, count: int, value: Any) -> int:
+        """
+        从列表中移除指定数量的指定值
+
+        Args:
+            name: 列表名称
+            count: 移除数量（0表示移除所有匹配项）
+            value: 要移除的值
+
+        Returns:
+            int: 移除的元素数量
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('lrem', name=name, count=count, value=value)
+
+        def _lrem():
+            serialized = json.dumps(value) if isinstance(value, (dict, list)) else value
+            return self._client.lrem(name, count, serialized)
+
+        return self._execute_with_retry(_lrem)
+
+    def hgetall(self, name: str) -> Dict[str, Any]:
+        """
+        获取哈希表中所有字段和值
+
+        Args:
+            name: 哈希表名称
+
+        Returns:
+            Dict[str, Any]: 字段到值的映射字典
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('hgetall', name=name)
+
+        def _hgetall():
+            raw_data = self._client.hgetall(name)
+            result = {}
+            for k, v in raw_data.items():
+                if isinstance(k, bytes):
+                    k = k.decode('utf-8')
+                if isinstance(v, bytes):
+                    v = v.decode('utf-8')
+                try:
+                    result[k] = json.loads(v)
+                except json.JSONDecodeError:
+                    result[k] = v
+            return result
+
+        return self._execute_with_retry(_hgetall)
+
     def rpop(self, name: str) -> Optional[Any]:
         """
         移除并返回列表的最后一个元素
@@ -424,6 +676,24 @@ class RedisManager:
             return self._execute_fallback('delete', names=names)
 
         return self._execute_with_retry(self._client.delete, *names)
+
+    def keys(self, pattern: str = '*') -> List[str]:
+        """
+        查找所有符合给定模式的键
+
+        Args:
+            pattern: 键名匹配模式（默认 '*'）
+
+        Returns:
+            List[str]: 符合模式的键名列表
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('keys', pattern=pattern)
+
+        def _keys():
+            return [key.decode('utf-8') if isinstance(key, bytes) else key for key in self._client.keys(pattern)]
+
+        return self._execute_with_retry(_keys)
 
     def close(self) -> None:
         """

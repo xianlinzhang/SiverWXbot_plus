@@ -2,7 +2,9 @@ import re
 import time
 import traceback
 from datetime import datetime
+from typing import Optional
 
+from core.message_store import MessageStore
 from logger import log
 from core.utils import SPLIT_SEPARATOR, SPLIT_PROMPT_TEMPLATE, clean_ai_reply_text
 
@@ -16,7 +18,7 @@ class MessageHandler:
     def __init__(self, bot):
         self.bot = bot
         self.config = bot.config
-        self.message_store = bot.message_store if hasattr(bot, 'message_store') else None
+        self.message_store: Optional[MessageStore] = bot.message_store if hasattr(bot, 'message_store') else None
 
     def _get_chat_api(self, user_name):
         """获取私聊用户对应的 AI 接口实例（白名单模式查 chat_api_map，否则用默认接口）"""
@@ -172,6 +174,9 @@ class MessageHandler:
         msg_id = None
 
         if self.message_store and not message_record:
+            message_time = getattr(message, 'time', '')
+            if message_time and hasattr(self.message_store, '_normalize_message_time'):
+                message_time = self.message_store._normalize_message_time(message_time)
             message_record = self.message_store.save_message(
                 chat_name=chat_name,
                 sender=message.sender,
@@ -179,7 +184,7 @@ class MessageHandler:
                 msg_type=message.type,
                 msg_attr=message.attr,
                 seq=message.seq,
-                message_time=message.time if hasattr(message, 'time') else datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
+                message_time=message_time,
             )
             msg_id = message_record.id
 
@@ -320,6 +325,37 @@ class MessageHandler:
         _submit_segment(0)
         return True
 
+    def _extract_message_time_from_control(self, msg):
+        """
+        从消息控件中提取时间信息
+        
+        :param msg: 消息对象
+        :return: 时间字符串，如果无法提取则返回 None
+        """
+        if hasattr(msg, 'control') and msg.control:
+            try:
+                children = msg.control.GetChildren()
+                for child in children:
+                    if child.ClassName and 'Time' in child.ClassName:
+                        time_text = child.Name
+                        if time_text and len(time_text) > 3:
+                            return time_text
+                    if child.Name and (':' in child.Name or '分' in child.Name):
+                        name = child.Name.strip()
+                        if len(name) >= 4 and len(name) <= 16:
+                            try:
+                                import re
+                                if re.match(r'^\d{1,2}:\d{2}$', name):
+                                    now = datetime.now()
+                                    return f"{now.year}/{now.month}/{now.day} {name}"
+                                if re.match(r'^\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2}$', name):
+                                    return name
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+        return None
+
     def message_handle_callback(self, msg, chat):
         """
         wxautox 监听器的消息回调函数。
@@ -333,7 +369,10 @@ class MessageHandler:
             return
 
         try:
-            message_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+            message_time = self._extract_message_time_from_control(msg)
+            if not message_time:
+                message_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+                
             text = (
                 message_time + " "
                 + f'类型：{msg.type} 属性：{msg.attr} 窗口：{chat.who}'

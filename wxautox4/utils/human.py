@@ -331,6 +331,40 @@ def human_noise_action(probability: float = 0.1) -> bool:
     return True
 
 
+def human_right_click(control: uia.Control, min_delay: float = 0.1, 
+                      max_delay: float = 0.3) -> Tuple[int, int]:
+    """
+    在控件范围内随机位置右键点击
+    
+    模拟人类右键点击行为：先移动鼠标到控件附近，然后在控件内随机位置右键点击。
+    
+    Args:
+        control: UIA控件对象
+        min_delay: 点击前最小延迟（秒）
+        max_delay: 点击前最大延迟（秒）
+        
+    Returns:
+        tuple[int, int]: 实际点击的坐标
+    """
+    rect = control.BoundingRectangle
+    center_x = (rect.left + rect.right) // 2
+    center_y = (rect.top + rect.bottom) // 2
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    
+    target_x, target_y = _random_offset_within_bounds(center_x, center_y, width, height)
+    
+    human_move_to(target_x, target_y)
+    
+    human_sleep(min_delay, max_delay)
+    
+    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, target_x, target_y, 0, 0)
+    time.sleep(random.uniform(0.03, 0.07))
+    win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, target_x, target_y, 0, 0)
+    
+    return target_x, target_y
+
+
 def human_dbl_click(control: uia.Control, min_delay: float = 0.1, 
                     max_delay: float = 0.3) -> Tuple[int, int]:
     """

@@ -3,7 +3,7 @@ import logging
 import threading
 import time
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -25,7 +25,28 @@ class WXTask:
     callback: Optional[Callable] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        result = {
+            'id': self.id,
+            'type': self.type,
+            'priority': self.priority,
+            'status': self.status,
+            'params': self.params,
+            'result': self.result,
+            'error': self.error,
+            'create_time': self.create_time,
+            'start_time': self.start_time,
+            'end_time': self.end_time,
+        }
+        if result['result'] is not None:
+            if hasattr(result['result'], 'to_dict'):
+                result['result'] = result['result'].to_dict()
+            elif isinstance(result['result'], (dict, list)):
+                pass
+            elif callable(result['result']):
+                result['result'] = str(result['result'])
+            else:
+                result['result'] = str(result['result'])
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WXTask':
@@ -162,7 +183,7 @@ class TaskQueue:
         Returns:
             List[WXTask]: 待执行任务列表，按优先级排序（高优先级在前）
         """
-        pending_raw = self.redis.get(self._pending_key) or []
+        pending_raw = self.redis.lrange(self._pending_key, 0, -1) or []
         if not isinstance(pending_raw, list):
             pending_raw = []
 
@@ -219,10 +240,12 @@ class TaskQueue:
         task_data['end_time'] = datetime.now().isoformat()
         self.redis.set(f'{self._detail_prefix}{task_id}', task_data)
 
-        pending_raw = self.redis.get(self._pending_key) or []
+        pending_raw = self.redis.lrange(self._pending_key, 0, -1) or []
         if isinstance(pending_raw, list):
-            new_pending = [item for item in pending_raw if item.get('task_id') != task_id]
-            self.redis.set(self._pending_key, new_pending)
+            for item in pending_raw:
+                if item.get('task_id') == task_id:
+                    self.redis.lrem(self._pending_key, 1, item)
+                    break
 
         self._logger.info(f"Task cancelled: {task_id}")
         return True
@@ -261,7 +284,7 @@ class TaskQueue:
 
     def _fetch_next_task(self) -> Optional[WXTask]:
         """获取下一个待执行任务"""
-        pending_raw = self.redis.get(self._pending_key) or []
+        pending_raw = self.redis.lrange(self._pending_key, 0, -1) or []
         if not isinstance(pending_raw, list) or not pending_raw:
             return None
 
@@ -271,16 +294,15 @@ class TaskQueue:
             if task_id:
                 task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
                 if task_data and task_data.get('status') == 'pending':
-                    pending_with_tasks.append((item['priority'], task_data))
+                    pending_with_tasks.append((item['priority'], task_data, item))
 
         if not pending_with_tasks:
             return None
 
         pending_with_tasks.sort(key=lambda x: x[0])
-        task_data = pending_with_tasks[0][1]
+        task_data, original_item = pending_with_tasks[0][1], pending_with_tasks[0][2]
 
-        new_pending = [item for item in pending_raw if item.get('task_id') != task_data['id']]
-        self.redis.set(self._pending_key, new_pending)
+        self.redis.lrem(self._pending_key, 1, original_item)
 
         return WXTask.from_dict(task_data)
 

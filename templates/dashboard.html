@@ -2600,9 +2600,14 @@ body.mobile-nav-open { overflow: hidden; }
           </div>
           <span id="contact-chat-title" style="font-size:14px;font-weight:600;color:#111827;"></span>
         </div>
-        <button type="button" onclick="closeContactChat()" style="padding:4px 8px;font-size:12px;border:none;background:none;color:#6b7280;cursor:pointer;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color='#6b7280'">
-          <i class="bi bi-x-lg"></i>
-        </button>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button type="button" id="btn-refresh-contact-messages" onclick="refreshContactMessages(false)" style="padding:4px 12px;font-size:12px;border:none;background:#3b82f6;color:white;cursor:pointer;border-radius:6px;" onmouseover="this.style.background='#2563eb'" onmouseout="this.style.background='#3b82f6'">
+            <i class="bi bi-arrow-clockwise"></i> 刷新消息
+          </button>
+          <button type="button" onclick="closeContactChat()" style="padding:4px 8px;font-size:12px;border:none;background:none;color:#6b7280;cursor:pointer;" onmouseover="this.style.color='#dc2626'" onmouseout="this.style.color='#6b7280'">
+            <i class="bi bi-x-lg"></i>
+          </button>
+        </div>
       </div>
       <div id="contact-chat-messages" style="flex:1;overflow-y:auto;padding:16px;background:#f3f4f6;">
         <div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">加载中...</div>
@@ -5735,6 +5740,9 @@ function renderContactsList(list){
   }
 }
 
+// 联系人消息刷新本地冷却记录：{chat_name: timestamp_ms}
+var _contactMessageLastRefresh = {};
+
 function viewContactMessages(wxid, remark, nickname){
   var displayName = remark || nickname || wxid;
   $('#contact-chat-title').text(displayName);
@@ -5747,6 +5755,22 @@ function viewContactMessages(wxid, remark, nickname){
   window._currentChatWxid = wxid;
   window._currentChatName = displayName;
   
+  // 先加载现有消息（快速展示 Redis/文件中的数据）
+  loadContactMessages();
+  
+  // 静默触发刷新：本地冷却 60 秒内跳过，避免频繁请求
+  // 后端也会做冷却校验，这里只是减少不必要的网络请求
+  var lastRefresh = _contactMessageLastRefresh[displayName] || 0;
+  if(Date.now() - lastRefresh >= 60000){
+    refreshContactMessages(true);
+  }
+}
+
+function loadContactMessages(){
+  var displayName = window._currentChatName;
+  var wxid = window._currentChatWxid;
+  if(!displayName) return;
+  
   $.getJSON('/api/messages/history?chat_name='+encodeURIComponent(displayName)+'&wxid='+encodeURIComponent(wxid))
     .done(function(res){
       if(res.code === 0 && res.data){
@@ -5758,6 +5782,61 @@ function viewContactMessages(wxid, remark, nickname){
     .fail(function(){
       $('#contact-chat-messages').html('<div style="padding:40px;text-align:center;color:#dc2626;font-size:13px;">加载消息失败</div>');
     });
+}
+
+function refreshContactMessages(silent){
+  var displayName = window._currentChatName;
+  if(!displayName) return;
+  
+  var $btn = $('#btn-refresh-contact-messages');
+  var originalHtml = $btn.html();
+  
+  if(!silent){
+    $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 刷新中...');
+  }
+  
+  $.ajax({
+    url: '/api/contacts/messages/refresh',
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({chat_name: displayName}),
+    success: function(res){
+      if(res.code === 0){
+        _contactMessageLastRefresh[displayName] = Date.now();
+        if(!silent){
+          svModal.success('刷新成功：拉取 ' + res.data.total_fetched + ' 条，新增 ' + res.data.new_saved + ' 条');
+        }
+        // 刷新成功后重新加载消息列表
+        loadContactMessages();
+      } else if(res.code === 429){
+        // 冷却中：静默模式不提示，非静默模式提示
+        if(!silent){
+          svModal.alert(res.message || '刷新冷却中，请稍后重试');
+        }
+      } else {
+        if(!silent){
+          svModal.error(res.message || '刷新失败');
+        }
+      }
+    },
+    error: function(xhr){
+      // 尝试解析 429 响应
+      var parsed = null;
+      try { parsed = JSON.parse(xhr.responseText); } catch(e) {}
+      if(parsed && parsed.code === 429){
+        if(!silent){
+          svModal.alert(parsed.message || '刷新冷却中，请稍后重试');
+        }
+      } else if(!silent){
+        svModal.error('刷新消息失败（HTTP ' + xhr.status + '）');
+      }
+    },
+    complete: function(){
+      if(!silent){
+        $btn.prop('disabled', false).html(originalHtml);
+      }
+    }
+  });
 }
 
 function centerChatWindow(){
@@ -5830,19 +5909,92 @@ function initChatDrag(){
 }
 
 function renderContactChatMessages(messages){
+  messages.sort(function(a, b){
+    return getTimeValue(a.time) - getTimeValue(b.time);
+  });
+  
   var html = '';
   messages.forEach(function(msg){
     var isSelf = msg.attr === 'self';
+    var timeStr = formatMessageTime(msg.time);
     html += '<div style="display:flex;margin-bottom:16px;'+(isSelf?'justify-content:flex-end':'justify-content:flex-start')+';">'+
-      '<div style="max-width:75%;padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.6;'+
+      '<div style="display:flex;flex-direction:column;align-items:'+(isSelf?'flex-end':'flex-start')+';max-width:75%;">'+
+      '<div style="padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.6;'+
       (isSelf?'background:#3b82f6;color:white;border-bottom-right-radius:6px;':'background:white;color:#111827;border-bottom-left-radius:6px;border:1px solid #e5e7eb;box-shadow:0 1px 2px rgba(0,0,0,0.05);')+'">'+
       $('<span>').text(msg.content).html()+
       '</div>'+
-      '<div style="font-size:11px;color:#9ca3af;margin:4px 10px;">'+msg.time+'</div>'+
+      '<div style="font-size:11px;color:#9ca3af;margin-top:4px;padding:0 6px;">'+timeStr+'</div>'+
+      '</div>'+
       '</div>';
   });
   $('#contact-chat-messages').html(html || '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">暂无消息记录</div>');
   $('#contact-chat-messages').scrollTop($('#contact-chat-messages')[0].scrollHeight);
+}
+
+function getTimeValue(timeStr){
+  if(!timeStr || String(timeStr).trim() === '') return 0;
+  timeStr = String(timeStr).trim();
+  if(/^\d+$/.test(timeStr)){
+    var timestamp = parseInt(timeStr);
+    if(timeStr.length === 10){
+      return timestamp * 1000;
+    }
+    return timestamp;
+  }
+  if(timeStr.includes('/') || timeStr.includes('-')){
+    var parts = timeStr.split(' ');
+    if(parts.length >= 2){
+      var datePart = parts[0];
+      var timePart = parts[1];
+      var dateParts = datePart.split(/[\/-]/);
+      if(dateParts.length >= 3){
+        var year = parseInt(dateParts[0]);
+        var month = parseInt(dateParts[1]) - 1;
+        var day = parseInt(dateParts[2]);
+        var timeParts = timePart.split(':');
+        if(timeParts.length >= 2){
+          var hour = parseInt(timeParts[0]);
+          var minute = parseInt(timeParts[1]);
+          var second = timeParts.length >= 3 ? parseInt(timeParts[2]) : 0;
+          return new Date(year, month, day, hour, minute, second).getTime();
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+function formatMessageTime(timeStr){
+  if(!timeStr || String(timeStr).trim() === '') return '-';
+  timeStr = String(timeStr).trim();
+  if(/^\d+$/.test(timeStr)){
+    var timestamp = parseInt(timeStr);
+    if(timeStr.length === 10){
+      timestamp = timestamp * 1000;
+    }
+    var date = new Date(timestamp);
+    if(!isNaN(date.getTime())){
+      return (date.getMonth()+1)+'/'+date.getDate()+' '+date.getHours().toString().padStart(2,'0')+':'+date.getMinutes().toString().padStart(2,'0');
+    }
+    return '-';
+  }
+  if(timeStr.includes('/') || timeStr.includes('-')){
+    var parts = timeStr.split(' ');
+    if(parts.length >= 2){
+      var datePart = parts[0];
+      var timePart = parts[1];
+      var dateParts = datePart.split(/[\/-]/);
+      if(dateParts.length >= 3){
+        var month = parseInt(dateParts[1]);
+        var day = parseInt(dateParts[2]);
+        var timeParts = timePart.split(':');
+        if(timeParts.length >= 2){
+          return month+'/'+day+' '+timeParts[0]+':'+timeParts[1];
+        }
+      }
+    }
+  }
+  return timeStr.length > 16 ? timeStr.substring(0, 16) : timeStr;
 }
 
 function sendContactChatMessage(){

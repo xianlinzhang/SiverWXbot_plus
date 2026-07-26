@@ -1,0 +1,26 @@
+- [x] `core/config_manager.py` 中新增了 `chatlog_message_refresh_days`、`chatlog_message_refresh_limit`、`chatlog_message_auto_refresh`、`chatlog_message_manual_refresh_cooldown` 4 个配置项，默认值分别为 30、500、True、60
+- [x] `config.json` 中补充了上述 4 个配置项（若文件存在）
+- [x] `MessageStore._save_messages_bulk_dedup` 实现了基于 seq 的去重（seq=0 时用 sender+content+receive_time 的 sha256 hash 兜底）
+- [x] `_save_messages_bulk_dedup` 在 Redis 可用时走 `lrange` → 过滤 → 批量 `lpush` → `ltrim` 流程
+- [x] `_save_messages_bulk_dedup` 在 Redis 不可用时降级到文件存储，同样去重
+- [x] `_save_messages_bulk_dedup` 返回 `(total_input, new_saved)` 统计
+- [x] `MessageStore.refresh_messages_from_chatlog` 校验 `chatlog_client` 可用性，不可用返回 `(0, 0)`
+- [x] `refresh_messages_from_chatlog` 通过 `chatlog_contact_map` 把备注名解析为 `userName` 作为 talker
+- [x] `refresh_messages_from_chatlog` 调用 `get_chatlog(talker, time, limit)` 拉取消息
+- [x] `refresh_messages_from_chatlog` 把消息转换为 `MessageRecord` 字段后调用 `_save_messages_bulk_dedup`
+- [x] `refresh_messages_from_chatlog` 异常时记录 WARNING 并返回 `(0, 0)`，不抛出
+- [x] `ChatlogManager.chatlog_listen_loop` 在 `chatlog_message_auto_refresh=True` 时，于过滤新消息之前调用 `refresh_messages_from_chatlog`
+- [x] 自动刷新调用被 try/except 包裹，失败时记录 ERROR 但不阻断主流程
+- [x] `chatlog_message_auto_refresh=False` 时 `chatlog_listen_loop` 完全保留原行为
+- [x] `web_server.py` 新增 `POST /api/contacts/messages/refresh` 端点
+- [x] 端点校验 `chat_name` 非空，缺失返回 400
+- [x] 端点实现冷却时间检查（内存字典），冷却内返回 429 + retry_after
+- [x] 端点调用 `refresh_messages_from_chatlog` 并返回 `{code:0, data:{total_fetched, new_saved}}`
+- [x] `templates/dashboard.html` 在联系人消息面板新增"刷新消息"按钮
+- [x] 按钮点击有 loading 状态、成功/失败 toast、刷新后重新加载消息列表
+- [x] 切换联系人查看消息时，超过冷却时间则静默自动刷新一次
+- [x] 冷却时间内或自动刷新失败时不阻断消息列表展示
+- [x] 重复刷新不产生重复记录（seq 去重生效）
+- [x] Redis 不可用时降级到文件存储，功能不中断
+- [x] 新增方法均添加了函数级注释（中文）
+- [x] 改造后的 `chatlog_listen_loop` 不影响原有 AI 回复流程（仍只对新消息回复）

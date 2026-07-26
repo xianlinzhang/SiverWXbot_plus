@@ -21,6 +21,12 @@ from wxautox4.logger import wxlog
 from wxautox4.param import WxParam, WxResponse
 from wxautox4.ui.base import BaseUISubWnd
 from wxautox4.utils.tools import find_all_windows_from_root, wxlog_debug_control
+from wxautox4.utils.human import (
+    human_click,
+    human_right_click,
+    human_sleep,
+    human_type_text,
+)
 
 
 def _lang(key: str) -> str:
@@ -370,7 +376,10 @@ class Moment:
 
         try:
             self._wx.SwitchToMoments()
-            time.sleep(0.2)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+            else:
+                time.sleep(0.2)
         except Exception:
             wxlog.debug('切换到朋友圈页面失败')
             return None
@@ -435,10 +444,20 @@ class Moment:
             action_button = None
 
         if action_button:
-            action_button.Click()
+            if WxParam.ENABLE_HUMANIZATION:
+                human_click(action_button,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
+            else:
+                action_button.Click()
         else:
             try:
-                item.control.RightClick()
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_right_click(item.control,
+                                      min_delay=WxParam.CLICK_DELAY_MIN,
+                                      max_delay=WxParam.CLICK_DELAY_MAX)
+                else:
+                    item.control.RightClick()
             except Exception:
                 return None
 
@@ -464,7 +483,12 @@ class Moment:
             ctrl = item.get_comment_control(comment)
             if not ctrl:
                 return WxResponse.failure('未定位到评论控件')
-            ctrl.Click()
+            if WxParam.ENABLE_HUMANIZATION:
+                human_click(ctrl,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
+            else:
+                ctrl.Click()
         else:
             menu = self._invoke_action_menu(item)
             if not menu:
@@ -482,7 +506,7 @@ class Moment:
         return dialog.send(content)
 
     def Publish(self, text: str = '', images: List[str] = None, privacy_config: Dict = None) -> WxResponse:
-        """发布朋友圈
+        """发布朋友圈，支持拟人化操作
         
         Args:
             text (str, optional): 朋友圈文字内容，默认空字符串
@@ -494,7 +518,10 @@ class Moment:
         """
         try:
             self._wx.SwitchToMoments()
-            time.sleep(0.5)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+            else:
+                time.sleep(0.5)
             
             MomentsWindow = self.GetMomentsWindow()
 
@@ -506,13 +533,25 @@ class Moment:
             # 打开发表窗口的按钮
             publish_button = MomentsToolBar.ButtonControl(ClassName=self.WindowMomentsControlReleaseToolClassName, Name=('发表'))
 
-            time.sleep(0.5)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+            else:
+                time.sleep(0.5)
             
             if not publish_button:
                 return WxResponse.failure('未找到发布按钮')
             
-            publish_button.Click(simulateMove=False)
-            time.sleep(0.5)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_click(publish_button,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
+            else:
+                publish_button.Click(simulateMove=False)
+            
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+            else:
+                time.sleep(0.5)
             
             if images and isinstance(images, list) and len(images) > 0:
                 try:
@@ -523,14 +562,29 @@ class Moment:
                     for img_path in images[:9]:
                         if os.path.exists(img_path):
                             # 点击添加图片
-                            PublishImageAddGridButton.Click()
+                            if WxParam.ENABLE_HUMANIZATION:
+                                human_click(PublishImageAddGridButton,
+                                           min_delay=WxParam.CLICK_DELAY_MIN,
+                                           max_delay=WxParam.CLICK_DELAY_MAX)
+                            else:
+                                PublishImageAddGridButton.Click()
+                            
                             SetClipboardText(img_path)
                             uia.SendKeys('{Ctrl}v')
-                            time.sleep(0.3)
+                            
+                            if WxParam.ENABLE_HUMANIZATION:
+                                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+                            else:
+                                time.sleep(0.3)
 
                             # 提交图片
                             PublishImageSubmitButton = MomentsWindow.FindControlByCondition({'Name': '打开', 'LocalizedControlType': '对话框'}).FindControlByCondition({'Name': '打开(O)', 'LocalizedControlType': '按钮'})
-                            PublishImageSubmitButton.Click()
+                            if WxParam.ENABLE_HUMANIZATION:
+                                human_click(PublishImageSubmitButton,
+                                           min_delay=WxParam.CLICK_DELAY_MIN,
+                                           max_delay=WxParam.CLICK_DELAY_MAX)
+                            else:
+                                PublishImageSubmitButton.Click()
 
                 except Exception as e:
                     wxlog.debug(f'图片上传失败: {str(e)}')
@@ -542,10 +596,22 @@ class Moment:
                     # 输入框
                     MomentsDialogReplyInput = MomentsWindow.FindControlByCondition({'ClassName': 'mmui::ReplyInputField'})
 
-                    SetClipboardText(text)
-
-                    MomentsDialogReplyInput.SendKeys('{Ctrl}v')
-
+                    # 根据消息长度选择输入模式
+                    if WxParam.ENABLE_HUMANIZATION and len(text) < WxParam.SHORT_MESSAGE_THRESHOLD:
+                        human_type_text(text, MomentsDialogReplyInput,
+                                       min_interval=WxParam.KEY_INTERVAL_MIN,
+                                       max_interval=WxParam.KEY_INTERVAL_MAX)
+                    else:
+                        # 剪贴板粘贴模式
+                        if WxParam.ENABLE_HUMANIZATION:
+                            human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+                        
+                        SetClipboardText(text)
+                        
+                        if WxParam.ENABLE_HUMANIZATION:
+                            human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+                        
+                        MomentsDialogReplyInput.SendKeys('{Ctrl}v')
 
                 except Exception as e:
                     wxlog.debug(f'文本粘贴失败: {str(e)}')
@@ -553,15 +619,26 @@ class Moment:
             if privacy_config and isinstance(privacy_config, dict):
                 wxlog.debug(f'隐私设置待实现')
             
-            time.sleep(0.5)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+            else:
+                time.sleep(0.5)
 
 
             publishing_button = MomentsWindow.FindControlByCondition({'Name': '发表', 'LocalizedControlType': '按钮', 'ClassName': 'mmui::XOutlineButton'})
             # wxlog_debug_control("publishing_button", publishing_button)
 
-            publishing_button.Click()
+            if WxParam.ENABLE_HUMANIZATION:
+                human_click(publishing_button,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
+            else:
+                publishing_button.Click()
 
-            time.sleep(1)
+            if WxParam.ENABLE_HUMANIZATION:
+                human_sleep(0.8, 1.5)
+            else:
+                time.sleep(1)
             return WxResponse.success('发布成功')
 
 
@@ -632,14 +709,24 @@ class MomentActionMenu(BaseUISubWnd):
         button = self._find_button(target_names)
         if not button:
             return WxResponse.failure('未找到点赞按钮')
-        button.Click()
+        if WxParam.ENABLE_HUMANIZATION:
+            human_click(button,
+                       min_delay=WxParam.CLICK_DELAY_MIN,
+                       max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            button.Click()
         return WxResponse.success('操作成功')
 
     def comment(self) -> WxResponse:
         button = self._find_button([_lang('评论')])
         if not button:
             return WxResponse.failure('未找到评论按钮')
-        button.Click()
+        if WxParam.ENABLE_HUMANIZATION:
+            human_click(button,
+                       min_delay=WxParam.CLICK_DELAY_MIN,
+                       max_delay=WxParam.CLICK_DELAY_MAX)
+        else:
+            button.Click()
         return WxResponse.success('已触发评论')
 
     def close(self) -> None:
@@ -712,18 +799,39 @@ class MomentCommentDialog(BaseUISubWnd):
             SetClipboardText = None  # type: ignore
 
         try:
-            self.edit.Click()
-            self.edit.SendKeys('{Ctrl}a')
-            if SetClipboardText:
-                SetClipboardText(content)
-                self.edit.SendKeys('{Ctrl}v')
+            if WxParam.ENABLE_HUMANIZATION:
+                human_click(self.edit,
+                           min_delay=WxParam.CLICK_DELAY_MIN,
+                           max_delay=WxParam.CLICK_DELAY_MAX)
             else:
-                # 退化方案：直接键入
-                for ch in content:
-                    self.edit.SendKeys(ch)
+                self.edit.Click()
+            self.edit.SendKeys('{Ctrl}a')
+
+            if len(content) < WxParam.SHORT_MESSAGE_THRESHOLD and WxParam.ENABLE_HUMANIZATION:
+                human_type_text(content, self.edit,
+                               min_interval=WxParam.KEY_INTERVAL_MIN,
+                               max_interval=WxParam.KEY_INTERVAL_MAX)
+            else:
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+
+                if SetClipboardText:
+                    SetClipboardText(content)
+                else:
+                    return WxResponse.failure('复制到剪贴板失败')
+
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(WxParam.PASTE_DELAY_MIN, WxParam.PASTE_DELAY_MAX)
+
+                self.edit.SendKeys('{Ctrl}v')
 
             if self.send_button and self.send_button.Exists(0):
-                self.send_button.Click()
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_click(self.send_button,
+                               min_delay=WxParam.CLICK_DELAY_MIN,
+                               max_delay=WxParam.CLICK_DELAY_MAX)
+                else:
+                    self.send_button.Click()
             else:
                 self.edit.SendKeys('{Enter}')
         except Exception as exc:  # pragma: no cover - UI 交互异常仅记录日志

@@ -125,28 +125,28 @@ class WXBot:
         _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
         self.reply_count_store = ReplyCountStore(os.path.join(_base, 'config', 'reply_count.json'))
 
-        # 消息处理器
-        self.message_handler = MessageHandler(self)
-
-        # 命令处理器
-        self.command_handler = CommandHandler(self)
-
-        # 监听管理器
-        self.listen_manager = ListenManager(self)
-
-        # Chatlog 管理器
-        self.chatlog_manager = ChatlogManager(self)
-
-        # 微信辅助工具
-        self.wx_utils = WXUtils(self)
-
-        # 消息存储模块（先使用临时 wx_id，init_wx_listeners 后会更新）
-        self.message_store = MessageStore('wxbot_default', self.config)
-
-        # Redis 管理器
+        # Redis 管理器（基础模块，无 bot 依赖）
         self.redis_manager = RedisManager(self.config)
 
-        # 任务队列
+        # 消息存储模块（先使用临时 wx_id，init_wx_listeners 后会更新）
+        self.message_store = MessageStore('wxbot_default', self.config, bot=self)
+
+        # 微信辅助工具（只需要 bot.config）
+        self.wx_utils = WXUtils(self)
+
+        # 消息处理器（需要 bot.message_store）
+        self.message_handler = MessageHandler(self)
+
+        # 命令处理器（需要 bot.message_store）
+        self.command_handler = CommandHandler(self)
+
+        # 监听管理器（需要 bot.config，bot.wx_lock 可选）
+        self.listen_manager = ListenManager(self)
+
+        # Chatlog 管理器（需要 bot.message_store，bot.wx_lock）
+        self.chatlog_manager = ChatlogManager(self)
+
+        # 任务队列（需要 bot.redis_manager）
         self.task_queue = TaskQueue(self)
 
     def _init_api(self):

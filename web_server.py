@@ -2835,5 +2835,63 @@ def refresh_contacts():
         return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
 
 
+# 联系人消息刷新冷却记录：{chat_name: last_refresh_timestamp}
+_contact_message_refresh_cooldowns = {}
+
+@app.route('/api/contacts/messages/refresh', methods=['POST'])
+@login_required
+def refresh_contact_messages():
+    """
+    刷新联系人消息
+
+    调用 Chatlog API 拉取指定会话最近 N 天的消息，去重后写入 Redis/文件存储。
+    受 chatlog_message_manual_refresh_cooldown 冷却时间限制，防止频繁刷新。
+
+    Returns:
+        flask.Response: JSON 格式响应，包含 code、message、data 字段
+    """
+    try:
+        if not bot or not hasattr(bot, 'message_store'):
+            return jsonify({'code': 400, 'message': '机器人未启动', 'data': None}), 400
+
+        data = request.get_json()
+        if not data:
+            return jsonify({'code': 400, 'message': '无效的请求数据', 'data': None}), 400
+
+        chat_name = data.get('chat_name', '').strip()
+        if not chat_name:
+            return jsonify({'code': 400, 'message': 'chat_name 参数不能为空', 'data': None}), 400
+
+        # 冷却时间检查
+        cooldown = getattr(bot.config, 'chatlog_message_manual_refresh_cooldown', 60)
+        now = time.time()
+        last_refresh = _contact_message_refresh_cooldowns.get(chat_name, 0)
+        if cooldown > 0 and (now - last_refresh) < cooldown:
+            retry_after = int(cooldown - (now - last_refresh)) + 1
+            return jsonify({
+                'code': 429,
+                'message': f'刷新冷却中，请 {retry_after} 秒后重试',
+                'data': {'retry_after': retry_after}
+            }), 429
+
+        # 调用刷新方法
+        total_fetched, new_saved = bot.message_store.refresh_messages_from_chatlog(chat_name)
+
+        # 更新冷却时间戳
+        _contact_message_refresh_cooldowns[chat_name] = time.time()
+
+        return jsonify({
+            'code': 0,
+            'message': '刷新成功',
+            'data': {
+                'total_fetched': total_fetched,
+                'new_saved': new_saved
+            }
+        })
+    except Exception as e:
+        log('ERROR', f'刷新联系人消息失败: {e}')
+        return jsonify({'code': 500, 'message': str(e), 'data': None}), 500
+
+
 if __name__ == '__main__':
     main()

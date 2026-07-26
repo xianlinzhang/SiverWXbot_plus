@@ -4,7 +4,7 @@ import json
 import uuid
 import hashlib
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from logger import log
 
@@ -91,16 +91,18 @@ class MessageStore:
     }
     INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
-    def __init__(self, wx_id, config=None, base_path=None):
+    def __init__(self, wx_id, config=None, base_path=None, bot=None):
         """
         初始化消息存储管理器
 
         :param wx_id: 微信 ID
         :param config: 配置对象，包含 Redis 配置和最大消息数
         :param base_path: 本地存储基础路径（降级时使用）
+        :param bot: 机器人主对象，用于访问 chatlog_contact_map 等数据
         """
         self.wx_id = wx_id
         self.config = config
+        self._bot = bot
 
         self.base_path = base_path or os.path.join(
             os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath("."),
@@ -194,11 +196,28 @@ class MessageStore:
         """将时间统一转成存储使用的字符串格式"""
         if isinstance(message_time, datetime):
             return message_time.strftime("%Y/%m/%d %H:%M:%S")
+        if isinstance(message_time, (int, float)):
+            timestamp = int(message_time)
+            if timestamp < 1e12:
+                timestamp = timestamp * 1000
+            return datetime.fromtimestamp(timestamp / 1000).strftime("%Y/%m/%d %H:%M:%S")
         if isinstance(message_time, str):
             message_time = message_time.strip()
             if message_time:
+                if message_time.isdigit():
+                    timestamp = int(message_time)
+                    if timestamp < 1e12:
+                        timestamp = timestamp * 1000
+                    return datetime.fromtimestamp(timestamp / 1000).strftime("%Y/%m/%d %H:%M:%S")
+                if 'T' in message_time or 'Z' in message_time:
+                    try:
+                        iso_time = message_time.replace('Z', '+00:00')
+                        dt = datetime.fromisoformat(iso_time)
+                        return dt.strftime("%Y/%m/%d %H:%M:%S")
+                    except Exception:
+                        pass
                 return message_time
-        return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        return ''
 
     def _get_max_count(self):
         """获取单会话最大存储消息数"""
@@ -242,9 +261,9 @@ class MessageStore:
 
             self._redis_manager.lpush(key, record_dict)
 
-            current_len = self._redis_manager._client.llen(key) if hasattr(self._redis_manager, '_client') and self._redis_manager._client else None
+            current_len = self._redis_manager.llen(key)
             if current_len is not None and current_len > max_count:
-                self._redis_manager._client.ltrim(key, 0, max_count - 1)
+                self._redis_manager.ltrim(key, 0, max_count - 1)
 
             status_key = self._get_msg_status_key(record_dict['id'])
             self._redis_manager.set(status_key, record_dict['status'])
@@ -254,34 +273,219 @@ class MessageStore:
             log(level="WARNING", message=f"Redis 保存消息失败: {e}")
             return False
 
+    def _build_dedup_key(self, record_dict):
+        """
+        构建消息去重键
+
+        使用 seq 作为唯一标识进行去重，seq 由 Chatlog API 保证唯一。
+        兼容字典和 SimpleNamespace 对象两种格式。
+
+        :param record_dict: 消息记录字典或 SimpleNamespace 对象
+        :return: 去重键字符串
+        """
+        if isinstance(record_dict, dict):
+            seq = record_dict.get('seq', 0)
+        else:
+            seq = getattr(record_dict, 'seq', 0)
+        return f"seq:{int(seq)}"
+
+    def _save_messages_bulk_dedup(self, chat_name, record_dicts):
+        """
+        批量保存消息到存储层，基于 seq 去重避免重复写入
+
+        Redis 可用时：先 lrange 取已有消息的去重键集合，过滤后批量 lpush，超限时 ltrim；
+        Redis 不可用时：降级到本地文件存储，同样执行去重逻辑。
+
+        :param chat_name: 会话名称
+        :param record_dicts: 消息记录字典列表
+        :return: 元组 (total_input, new_saved)，total_input 为入参总数，new_saved 为实际新增数
+        """
+        total_input = len(record_dicts)
+        if total_input == 0:
+            return (0, 0)
+
+        if self._is_redis_available():
+            try:
+                key = self._get_messages_key(chat_name)
+                max_count = self._get_max_count()
+
+                existing_msgs = self._redis_manager.lrange(key, 0, -1) or []
+                existing_keys = set()
+                for msg_data in existing_msgs:
+                    if isinstance(msg_data, dict):
+                        existing_keys.add(self._build_dedup_key(msg_data))
+
+                new_records = []
+                for record_dict in record_dicts:
+                    dedup_key = self._build_dedup_key(record_dict)
+                    if dedup_key not in existing_keys:
+                        existing_keys.add(dedup_key)
+                        new_records.append(record_dict)
+
+                if new_records:
+                    self._redis_manager.lpush(key, *new_records)
+                    current_len = self._redis_manager.llen(key)
+                    if current_len is not None and current_len > max_count:
+                        self._redis_manager.ltrim(key, 0, max_count - 1)
+
+                    for record_dict in new_records:
+                        status_key = self._get_msg_status_key(record_dict.get('id', ''))
+                        self._redis_manager.set(status_key, record_dict.get('status', 'pending'))
+
+                log(message=f"批量去重保存消息(Redis) [{chat_name}]: 入参 {total_input} 条，新增 {len(new_records)} 条")
+                return (total_input, len(new_records))
+            except Exception as e:
+                log(level="WARNING", message=f"Redis 批量去重保存失败 [{chat_name}]: {e}，降级到文件存储")
+
+        # 文件存储降级路径
+        path = self._get_message_path(chat_name)
+        with self._get_lock(chat_name):
+            messages = self._load_messages(path)
+            existing_keys = set()
+            for msg_data in messages:
+                if isinstance(msg_data, dict):
+                    existing_keys.add(self._build_dedup_key(msg_data))
+
+            new_count = 0
+            for record_dict in record_dicts:
+                dedup_key = self._build_dedup_key(record_dict)
+                if dedup_key not in existing_keys:
+                    existing_keys.add(dedup_key)
+                    messages.append(record_dict)
+                    new_count += 1
+
+            max_count = self._get_max_count()
+            if len(messages) > max_count:
+                messages = messages[-max_count:]
+
+            self._save_messages(path, messages)
+            log(message=f"批量去重保存消息(File) [{chat_name}]: 入参 {total_input} 条，新增 {new_count} 条")
+            return (total_input, new_count)
+
+    def refresh_messages_from_chatlog(self, chat_name, days=None, limit=None, prefetched_msgs=None):
+        """
+        从 Chatlog API 拉取指定会话的历史消息，去重后批量写入存储层
+
+        支持自动刷新（chatlog_listen_loop 调用）与手动刷新（web API 调用）两种触发方式。
+        若调用方已拉取过消息，可通过 prefetched_msgs 传入以避免重复 API 调用。
+
+        :param chat_name: 会话名称（备注名）
+        :param days: 拉取最近 N 天的消息，None 时使用 config.chatlog_message_refresh_days
+        :param limit: 拉取条数上限，None 时使用 config.chatlog_message_refresh_limit
+        :param prefetched_msgs: 调用方已拉取的 Chatlog 消息列表，None 时由本方法调用 API 拉取
+        :return: 元组 (total_fetched, new_saved)，拉取总数与新增入库数；失败返回 (0, 0)
+        """
+        try:
+            if not self._bot or not getattr(self._bot, 'chatlog_client', None):
+                log(level="WARNING", message=f"刷新消息失败 [{chat_name}]: chatlog_client 不可用")
+                return (0, 0)
+
+            # 解析配置参数：优先使用调用方传入值，否则回退到 config 配置，再否则用默认值
+            refresh_days = days if days is not None else getattr(self.config, 'chatlog_message_refresh_days', 30)
+            refresh_limit = limit if limit is not None else getattr(self.config, 'chatlog_message_refresh_limit', 500)
+
+            # 通过 chatlog_contact_map 把备注名解析为 userName 作为 talker
+            talker = chat_name
+            contact_map = getattr(self._bot, 'chatlog_contact_map', {}) or {}
+            if chat_name in contact_map:
+                contact = contact_map[chat_name] or {}
+                talker = contact.get('userName', chat_name)
+            else:
+                # 兜底：遍历查找 remark 匹配
+                for v in contact_map.values():
+                    if isinstance(v, dict) and v.get('remark') == chat_name:
+                        talker = v.get('userName', chat_name)
+                        break
+
+            # 拉取消息：若调用方已提供 prefetched_msgs 则直接复用，避免重复调用 API
+            if prefetched_msgs is not None:
+                msgs = prefetched_msgs
+            else:
+                start_date = (datetime.now() - timedelta(days=refresh_days)).strftime('%Y-%m-%d')
+                end_date = datetime.now().strftime('%Y-%m-%d')
+                time_range = f"{start_date}~{end_date}"
+                log(message=f"刷新消息 [{chat_name}]: 调用 Chatlog API，talker={talker}, time={time_range}, limit={refresh_limit}")
+                msgs = self._bot.chatlog_client.get_chatlog(talker=talker, time=time_range, limit=refresh_limit)
+
+            if not msgs:
+                log(message=f"刷新消息 [{chat_name}]: Chatlog 返回为空")
+                return (0, 0)
+
+            # 将 Chatlog 原始消息转换为 MessageRecord 字典格式
+            record_dicts = []
+            for msg in msgs:
+                if not isinstance(msg, dict):
+                    continue
+
+                # 消息类型映射：1=text, 3=image, 其余归为 unknown
+                msg_type = msg.get('type', 0)
+                if msg_type == 1:
+                    msg_type_str = 'text'
+                elif msg_type == 3:
+                    msg_type_str = 'image'
+                else:
+                    msg_type_str = 'unknown'
+
+                # 消息属性判定：自己发送 / 群聊 / 好友
+                if msg.get('isSelf', False):
+                    msg_attr = 'self'
+                elif msg.get('isChatRoom', False):
+                    msg_attr = 'group'
+                else:
+                    msg_attr = 'friend'
+
+                sender = msg.get('senderName', '') or msg.get('sender', '')
+                content = msg.get('content', '')
+                # 图片消息优先使用 contents.md5 作为内容标识
+                if msg_type_str == 'image' and msg.get('contents'):
+                    content = msg['contents'].get('md5', content)
+
+                seq = msg.get('seq', 0) or 0
+                receive_time = self._normalize_message_time(msg.get('time', ''))
+
+                # 构造与 MessageRecord.to_dict() 字段一致的字典
+                record = {
+                    "id": str(seq),
+                    "chat_name": chat_name,
+                    "sender": sender,
+                    "content": content,
+                    "msg_type": msg_type_str,
+                    "msg_attr": msg_attr,
+                    "seq": seq,
+                    "receive_time": receive_time,
+                    "status": "pending",
+                    "reply_id": None,
+                    "reply_content": "",
+                    "reply_time": "",
+                    "needs_confirm": False,
+                    "confirm_status": "pending",
+                    "unread": False,
+                }
+                record_dicts.append(record)
+
+            total_fetched = len(record_dicts)
+            # 复用批量去重保存逻辑写入存储层
+            _, new_saved = self._save_messages_bulk_dedup(chat_name, record_dicts)
+            log(message=f"刷新消息 [{chat_name}]: 拉取 {total_fetched} 条，新增入库 {new_saved} 条")
+            return (total_fetched, new_saved)
+
+        except Exception as e:
+            log(level="WARNING", message=f"刷新消息异常 [{chat_name}]: {e}")
+            return (0, 0)
+
     def _redis_get_messages(self, chat_name, count=None):
         """从 Redis 获取消息列表"""
         if not self._redis_manager:
             return None
         try:
             key = self._get_messages_key(chat_name)
-            messages = []
-
-            client = self._redis_manager._client if hasattr(self._redis_manager, '_client') else None
-            if not client:
-                return None
-
-            length = client.llen(key)
+            length = self._redis_manager.llen(key)
             if length == 0:
                 return []
 
             start = 0
             end = -1 if count is None else min(count - 1, length - 1)
-            raw_messages = client.lrange(key, start, end)
-
-            for raw_msg in raw_messages:
-                try:
-                    if isinstance(raw_msg, bytes):
-                        raw_msg = raw_msg.decode('utf-8')
-                    msg_data = json.loads(raw_msg)
-                    messages.append(msg_data)
-                except (json.JSONDecodeError, ValueError):
-                    continue
+            messages = self._redis_manager.lrange(key, start, end)
 
             return messages
         except Exception as e:
@@ -294,29 +498,18 @@ class MessageStore:
             return False
         try:
             key = self._get_messages_key(chat_name)
-            client = self._redis_manager._client if hasattr(self._redis_manager, '_client') else None
-            if not client:
-                return False
-
-            length = client.llen(key)
+            length = self._redis_manager.llen(key)
             for i in range(length):
-                raw_msg = client.lindex(key, i)
-                if raw_msg:
-                    try:
-                        if isinstance(raw_msg, bytes):
-                            raw_msg = raw_msg.decode('utf-8')
-                        msg_data = json.loads(raw_msg)
-                        if msg_data.get('id') == message_id:
-                            msg_data.update(updates)
-                            client.lset(key, i, json.dumps(msg_data))
+                msg_data = self._redis_manager.lindex(key, i)
+                if msg_data and msg_data.get('id') == message_id:
+                    msg_data.update(updates)
+                    self._redis_manager.lset(key, i, msg_data)
 
-                            if 'status' in updates:
-                                status_key = self._get_msg_status_key(message_id)
-                                self._redis_manager.set(status_key, updates['status'])
+                    if 'status' in updates:
+                        status_key = self._get_msg_status_key(message_id)
+                        self._redis_manager.set(status_key, updates['status'])
 
-                            return True
-                    except (json.JSONDecodeError, ValueError):
-                        continue
+                    return True
             return False
         except Exception as e:
             log(level="WARNING", message=f"Redis 更新消息失败: {e}")
@@ -348,30 +541,13 @@ class MessageStore:
             return None
         try:
             queue_key = self._get_pending_confirm_key()
-            client = self._redis_manager._client if hasattr(self._redis_manager, '_client') else None
-            if not client:
-                return None
-
-            message_ids = client.lrange(queue_key, 0, -1)
+            message_ids = self._redis_manager.lrange(queue_key, 0, -1)
             records = []
 
             for msg_id in message_ids:
-                if isinstance(msg_id, bytes):
-                    msg_id = msg_id.decode('utf-8')
-
                 detail_key = self._get_pending_confirm_detail_key(msg_id)
-                raw_data = self._redis_manager._client.hgetall(detail_key) if client else {}
-                if raw_data:
-                    record_dict = {}
-                    for k, v in raw_data.items():
-                        if isinstance(k, bytes):
-                            k = k.decode('utf-8')
-                        if isinstance(v, bytes):
-                            v = v.decode('utf-8')
-                        try:
-                            record_dict[k] = json.loads(v)
-                        except json.JSONDecodeError:
-                            record_dict[k] = v
+                record_dict = self._redis_manager.hgetall(detail_key)
+                if record_dict:
                     records.append(MessageRecord.from_dict(record_dict))
 
             return records
@@ -387,10 +563,7 @@ class MessageStore:
             queue_key = self._get_pending_confirm_key()
             detail_key = self._get_pending_confirm_detail_key(message_id)
 
-            client = self._redis_manager._client if hasattr(self._redis_manager, '_client') else None
-            if client:
-                client.lrem(queue_key, 0, message_id)
-
+            self._redis_manager.lrem(queue_key, 0, message_id)
             self._redis_manager.delete(detail_key)
 
             return True
@@ -912,19 +1085,29 @@ class MessageStore:
         :param wxid: 微信号（可选，用于补充查找）
         :return: 历史消息列表，格式：[{"time": "xxx", "type": "xxx", "attr": "friend/group/self", "sender": "xxx", "content": "xxx"}]
         """
-        if wxid:
-            messages = self.get_all_messages_with_fallback(chat_name, wxid, count)
-        else:
-            messages = self.get_all_messages(chat_name, count)
+        chatlog_history = None
+        if self._bot and hasattr(self._bot, 'chatlog_client') and self._bot.chatlog_client:
+            log("DEBUG", f"[MessageStore] 优先从 Chatlog API 获取历史消息")
+            chatlog_history = self._get_history_from_chatlog(chat_name, count)
+
+        if chatlog_history:
+            chatlog_history.sort(key=self._get_message_sort_key)
+            return chatlog_history
+
+        messages = self.get_all_messages_with_fallback(chat_name, wxid, count)
+
         history = []
 
         for msg in messages:
             msg_type = str(msg.msg_type)
-
             attr = str(msg.msg_attr)
+            
+            msg_time = msg.receive_time
+            if not msg_time or str(msg_time).strip() == '':
+                msg_time = ''
 
             history.append({
-                "time": msg.receive_time,
+                "time": msg_time,
                 "type": msg_type,
                 "attr": attr,
                 "sender": msg.sender,
@@ -932,15 +1115,129 @@ class MessageStore:
             })
 
             if msg.reply_content:
+                reply_time = msg.reply_time or msg.receive_time
+                if not reply_time or str(reply_time).strip() == '':
+                    reply_time = ''
                 history.append({
-                    "time": msg.reply_time or msg.receive_time,
+                    "time": reply_time,
                     "type": "text",
                     "attr": "self",
                     "sender": "self",
                     "content": msg.reply_content
                 })
 
+        history.sort(key=self._get_message_sort_key)
+
         return history
+
+    def _get_message_sort_key(self, msg):
+        """
+        获取消息排序键，用于按时间正序排序
+        
+        支持多种时间格式：
+        - "YYYY/MM/DD HH:MM:SS" 格式的字符串
+        - 时间戳（整数或字符串，支持秒级10位和毫秒级13位）
+        - datetime 对象
+        
+        :param msg: 消息字典，包含 time 字段
+        :return: 排序键（时间戳，毫秒级）
+        """
+        msg_time = msg.get("time", "")
+        if isinstance(msg_time, datetime):
+            return msg_time.timestamp() * 1000
+        if isinstance(msg_time, (int, float)):
+            timestamp = int(msg_time)
+            if timestamp < 1e12:
+                return timestamp * 1000
+            return timestamp
+        if isinstance(msg_time, str):
+            msg_time = msg_time.strip()
+            if msg_time.isdigit():
+                timestamp = int(msg_time)
+                if len(msg_time) == 10:
+                    return timestamp * 1000
+                return timestamp
+            try:
+                formats = ["%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M:%S.%f"]
+                for fmt in formats:
+                    try:
+                        return datetime.strptime(msg_time, fmt).timestamp() * 1000
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+        return 0
+
+    def _get_history_from_chatlog(self, chat_name, count=None):
+        """
+        从 Chatlog API 获取历史消息作为兜底数据源
+
+        :param chat_name: 会话名称（备注名或 wxid）
+        :param count: 返回消息数量（None 返回全部）
+        :return: 历史消息列表，格式与 get_history 一致
+        """
+        try:
+            if not self._bot or not hasattr(self._bot, 'chatlog_client') or not self._bot.chatlog_client:
+                return None
+
+            talker = chat_name
+            if hasattr(self._bot, 'chatlog_contact_map'):
+                contact_map = self._bot.chatlog_contact_map
+                if chat_name in contact_map:
+                    contact = contact_map[chat_name]
+                    talker = contact.get('userName', chat_name)
+                elif any(chat_name == v.get('remark') for v in contact_map.values()):
+                    for v in contact_map.values():
+                        if v.get('remark') == chat_name:
+                            talker = v.get('userName', chat_name)
+                            break
+
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            time_range = f"{start_date}~{end_date}"
+
+            log("DEBUG", f"[MessageStore] 调用 Chatlog API 获取历史消息，talker={talker}, time={time_range}")
+            msgs = self._bot.chatlog_client.get_chatlog(talker=talker, time=time_range, limit=count or 200)
+
+            if not msgs:
+                log("DEBUG", f"[MessageStore] Chatlog API 返回为空")
+                return None
+
+            history = []
+            for msg in msgs:
+                msg_type = msg.get('type', 0)
+                if msg_type == 1:
+                    msg_type_str = 'text'
+                elif msg_type == 3:
+                    msg_type_str = 'image'
+                else:
+                    msg_type_str = 'unknown'
+
+                if msg.get('isSelf', False):
+                    attr = 'self'
+                elif msg.get('isChatRoom', False):
+                    attr = 'group'
+                else:
+                    attr = 'friend'
+
+                sender = msg.get('senderName', '') or msg.get('sender', '')
+                content = msg.get('content', '')
+                msg_time = msg.get('time', '')
+
+                history.append({
+                    "time": msg_time,
+                    "type": msg_type_str,
+                    "attr": attr,
+                    "sender": sender,
+                    "content": content
+                })
+
+            log("DEBUG", f"[MessageStore] 从 Chatlog API 获取到 {len(history)} 条历史消息")
+            return history
+
+        except Exception as e:
+            log(level="WARNING", message=f"[MessageStore] 从 Chatlog API 获取历史消息失败: {e}")
+            return None
 
     def get_stats(self):
         """
@@ -959,29 +1256,23 @@ class MessageStore:
             try:
                 base_key = f"wxbot:{self.wx_id}:messages:"
                 all_keys = self._redis_manager.keys(f"{base_key}*")
+                pending_key = f"{base_key}pending_confirm"
                 for key in all_keys:
-                    messages_data = self._redis_manager.get(key)
-                    if messages_data:
-                        try:
-                            messages = json.loads(messages_data)
-                            for msg in messages:
-                                stats['total'] += 1
-                                status = msg.get('status', '')
-                                if status == 'processed':
-                                    stats['processed'] += 1
-                                elif status == 'replied':
-                                    stats['replied'] += 1
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                    if key == pending_key:
+                        continue
+                    messages = self._redis_manager.get(key)
+                    if messages and isinstance(messages, list):
+                        for msg in messages:
+                            stats['total'] += 1
+                            status = msg.get('status', '')
+                            if status == 'processed':
+                                stats['processed'] += 1
+                            elif status == 'replied':
+                                stats['replied'] += 1
                 
-                pending_key = f"wxbot:{self.wx_id}:messages:pending_confirm"
                 pending_data = self._redis_manager.get(pending_key)
-                if pending_data:
-                    try:
-                        pending_list = json.loads(pending_data)
-                        stats['pending_confirm'] = len(pending_list)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                if pending_data and isinstance(pending_data, list):
+                    stats['pending_confirm'] = len(pending_data)
             except Exception as e:
                 log(level="WARNING", message=f"Redis 获取消息统计失败: {e}")
                 pass
@@ -1042,10 +1333,8 @@ class MessageStore:
         if self._is_redis_available():
             try:
                 pattern = f"wxbot:{self.wx_id}:messages:*"
-                keys = self._redis_manager._client.keys(pattern) if hasattr(self._redis_manager, '_client') else []
+                keys = self._redis_manager.keys(pattern)
                 for key in keys:
-                    if isinstance(key, bytes):
-                        key = key.decode('utf-8')
                     self._redis_manager.delete(key)
                     count += 1
                 log(message=f"所有消息已清空(Redis): {count} 个会话")
