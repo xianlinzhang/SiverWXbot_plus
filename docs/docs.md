@@ -1,10 +1,10 @@
 # 🤖 Siver WX机器人 (wxbot_plus)
 
-[![Version](https://img.shields.io/badge/version-V4.7.26-blue.svg)](https://github.com/SiverKing/SiverWXbot_plus)
-[![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-V4.7.27-blue.svg)](https://github.com/SiverKing/SiverWXbot_plus)
+[![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-> 一个功能完整、架构清晰的WX机器人框架，支持多 AI 平台接入、多份 Prompt 管理、对话记忆、拆分多条回复、图片识别、自定义规则转发、灵活的监听模式、50+ 管理命令和智能的消息处理流程。
+> 一个功能完整、架构清晰的WX机器人框架，支持多 AI 平台接入、多份 Prompt 管理、对话记忆、拆分多条回复、图片识别、自定义规则转发、灵活的监听模式、Chatlog 监听模式、Redis 存储、任务队列和智能的消息处理流程。
 
 **作者**: [Siver](https://www.siver.top)
 
@@ -434,6 +434,80 @@ Webhook 通知用于在机器人出现报错时，通过 HTTP Webhook 向飞书�
 ### 数据备份
 
 可备份配置数据
+
+---
+
+### Chatlog 监听模式
+
+Chatlog 监听模式是一种通过 Chatlog API 获取消息的监听方式，相比传统的界面监听模式更加稳定和高效。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| 启用 Chatlog 监听 | 关闭 | 开启后通过 Chatlog API 获取消息，不再通过界面监听 |
+| Chatlog 服务地址 | `http://127.0.0.1:5030` | Chatlog 服务的 URL |
+| 轮询间隔 | 3 秒 | Chatlog API 轮询间隔（秒） |
+| 请求超时 | 5 秒 | Chatlog 请求超时时间（秒） |
+| 上下文增强 | 关闭 | 开启后通过 Chatlog API 获取历史消息增强上下文 |
+| 上下文消息数 | 20 条 | 上下文增强时拉取的历史消息条数 |
+| 消息回复延迟 | 0 秒 | Chatlog 模式下，超过指定时间（秒）的消息才回复 |
+| 联系人查询 | 关闭 | 是否启用联系人查询功能 |
+| 自动刷新消息 | 开启 | Chatlog 监听循环自动刷新消息开关 |
+| 消息刷新天数 | 30 天 | 消息刷新拉取天数 |
+| 消息刷新条数上限 | 500 条 | 消息刷新拉取条数上限 |
+
+> ⚠️ **注意：** 开启 Chatlog 监听模式后，消息获取必须通过 Chatlog API，禁止通过界面获取。需要先部署并运行 Chatlog 服务。
+
+---
+
+### Redis 存储配置
+
+Redis 存储用于缓存联系人数据、消息记录和任务队列等，提升性能和可靠性。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| 启用 Redis | 开启 | 开启 Redis 存储支持 |
+| Redis 主机 | `127.0.0.1` | Redis 服务器地址 |
+| Redis 端口 | `6379` | Redis 端口 |
+| Redis 数据库 | `0` | Redis 数据库编号 |
+| Redis 密码 | 空 | Redis 密码（可选） |
+| 连接超时 | 5 秒 | Redis 连接超时时间（秒） |
+| 重试次数 | 3 次 | 连接失败重试次数 |
+| 自动降级 | 开启 | Redis 不可用时自动降级到本地文件存储 |
+
+> 💡 **降级机制：** 当 Redis 不可用或 redis-py 库未安装时，系统会自动降级到本地文件存储（`fallback_redis.json`），确保功能不受影响。
+
+---
+
+### 任务队列配置
+
+任务队列用于异步执行发送消息、发送朋友圈、点赞朋友圈等操作，避免阻塞主进程。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| 启用任务队列 | 开启 | 开启任务队列功能 |
+| 最大待执行数 | `1000` | 队列中最大待执行任务数 |
+| 历史保留条数 | `500` | 任务历史记录保留条数 |
+
+支持的任务类型：
+- `send_msg`：发送消息
+- `send_moments`：发送朋友圈
+- `like_moments`：点赞朋友圈
+- `pass_friend`：通过好友请求
+- `send_file`：发送文件
+
+---
+
+### 消息存储配置
+
+消息存储模块用于持久化存储消息记录，支持 Redis 和本地文件两种存储方式。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| 单会话最大存储数 | `1000` | 每个会话最多存储的消息条数 |
+
+消息存储路径：`config/message_store/[wx号]/[会话名]/[会话名]_messages.json`
+
+> 💡 **消息去重：** 基于 `seq` 字段进行去重，避免重复处理同一条消息。
 
 ---
 

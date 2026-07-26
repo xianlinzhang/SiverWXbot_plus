@@ -1,10 +1,10 @@
 # 🤖 Siver WX机器人 (wxbot_plus)
 
-[![Version](https://img.shields.io/badge/version-V4.7.26-blue.svg)](https://github.com/SiverKing/SiverWXbot_plus)
+[![Version](https://img.shields.io/badge/version-V4.7.27-blue.svg)](https://github.com/SiverKing/SiverWXbot_plus)
 [![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-> 一个功能完整、架构清晰的WX机器人框架，支持多 AI 平台接入、多份 Prompt 管理、对话记忆、拆分多条回复、图片识别、自定义规则转发、灵活的监听模式、50+ 管理命令和智能的消息处理流程。
+> 一个功能完整、架构清晰的WX机器人框架，支持多 AI 平台接入、多份 Prompt 管理、对话记忆、拆分多条回复、图片识别、自定义规则转发、灵活的监听模式、Chatlog 监听模式、Redis 存储、任务队列和智能的消息处理流程。
 
 **作者**: [Siver](https://www.siver.top)
 
@@ -203,7 +203,23 @@ python web_server.py
 - **面板内一键配置** - 在左侧 **远程访问服务** 页面中填写激活码和安全入口、开启开关并点击连接即可完成接入
 - **文档说明** - 详细使用教程可查看 [SiverWXbot_docs](https://wxbot.siverking.online/docs.html?c=远程访问服务) 中的“远程访问服务”章节
 
-### 📧 告警通知
+### � Chatlog 监听模式
+- **稳定消息获取** - 通过 Chatlog API 获取消息，相比界面监听更加稳定高效
+- **上下文增强** - 自动拉取历史消息增强 AI 回复上下文，提升对话连贯性
+- **灵活配置** - 支持自定义轮询间隔、请求超时、消息回复延迟等参数
+- **独立运行** - 需要先部署并运行 Chatlog 服务
+
+### 🗄️ Redis 存储
+- **高性能缓存** - 用于缓存联系人数据、消息记录和任务队列，提升性能
+- **自动降级** - Redis 不可用时自动降级到本地文件存储，确保功能不受影响
+- **多模块支持** - 支持任务队列、消息存储、联系人缓存等多个模块
+
+### 📋 任务队列
+- **异步任务执行** - 发送消息、发送朋友圈、点赞朋友圈等操作异步执行，避免阻塞主进程
+- **多种任务类型** - 支持 send_msg、send_moments、like_moments、pass_friend、send_file
+- **队列管理** - 支持查看待执行任务、历史记录、失败重试
+
+### �📧 告警通知
 - **邮件告警** - 发生错误时自动发送邮件通知
 - **离线检测** - WX离线时自动告警
 
@@ -633,11 +649,32 @@ wxbot_plus/
 ├── web_server.py              # Web 管理界面
 ├── logger.py                  # 日志模块
 ├── email_send.py              # 邮件发送模块
+├── webhook_send.py            # Webhook 通知模块
+├── chatlog_client.py          # Chatlog API 客户端
+├── siver_panel.py             # SiverPanel 远程访问客户端
 ├── requirements.txt           # 依赖列表
+├── core/                      # 核心模块目录
+│   ├── ai_api.py              # AI 接口模块（DusAPI/OpenAI SDK/Dify/Coze）
+│   ├── chatlog_manager.py     # Chatlog 监听管理
+│   ├── command_handler.py     # 命令处理模块
+│   ├── config_manager.py      # 配置管理模块
+│   ├── listen_manager.py      # 监听管理模块
+│   ├── memory_manager.py      # 记忆管理模块
+│   ├── message_handler.py     # 消息处理模块
+│   ├── message_store.py       # 消息存储模块（支持 Redis/文件存储）
+│   ├── redis_manager.py       # Redis 管理模块（含自动降级）
+│   ├── task_queue.py          # 任务队列模块（异步任务执行）
+│   ├── utils.py               # 工具函数
+│   └── wx_utils.py            # 微信辅助工具
 ├── config/                    # 配置文件目录（自动创建）
 │   ├── config.json            # 机器人配置
 │   ├── admin.json             # Web 管理账密
 │   ├── email.txt              # 邮件告警配置
+│   ├── webhook.json           # Webhook 配置
+│   ├── panel_secret.key       # 面板会话密钥
+│   ├── reply_count.json       # 回复计数存储
+│   ├── fallback_redis.json    # Redis 降级存储
+│   ├── message_store/         # 消息存储目录
 │   └── prompt/                # Prompt 文件目录（自动创建）
 │       ├── 默认.md             # 默认 Prompt（自动创建）
 │       └── *.md               # 其他自定义 Prompt
@@ -649,7 +686,23 @@ wxbot_plus/
 ├── templates/                 # Web 界面模板
 │   ├── dashboard.html         # 管理面板
 │   ├── login.html
+│   ├── error.html
 │   └── static/                # 本地静态资源（Bootstrap Icons 本地化）
+├── wxautox4/                  # wxautox4 内核库（Plus版，需授权）
+│   ├── msgs/                  # 消息解析模块
+│   ├── ui/                    # UI 控件模块
+│   ├── uia/                   # UI Automation 模块
+│   ├── utils/                 # 工具模块
+│   ├── __init__.py
+│   ├── moment.py              # 朋友圈功能
+│   ├── wx.py                  # 微信客户端接口
+│   └── ...
+├── docs/                      # 文档目录
+│   ├── docs.md                # 用户手册
+│   ├── docs.html              # 文档页面
+│   ├── index.html             # 文档首页
+│   ├── version.json           # 版本信息
+│   └── lib/                   # 文档静态资源
 └── wxauto_logs/               # wxautox 日志目录
 ```
 
