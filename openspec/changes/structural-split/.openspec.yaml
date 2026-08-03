@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-08-03
+goal: "目标: 想改配置/加接口不再在单文件里游泳, 转发层精简为薄类目"

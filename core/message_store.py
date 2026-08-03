@@ -239,9 +239,61 @@ class MessageStore:
         safe_chat_name = self.INVALID_FILENAME_CHARS_RE.sub('_', str(chat_name))
         return f"wxbot:{self.wx_id}:messages:{safe_chat_name}"
 
+    def _read_source(self, chat_name, wxid=None):
+        """
+        确定会话消息的权威存储位置与权威 key，返回 `(source, key)`：
+          - source: 'redis' 或 'file'
+          - key:    Redis 权威 list key（source=redis）或本地文件路径（source=file）
+
+        设计上：Redis 与本地文件是「同一逻辑数据的两份镜像（primary + 镜像）」。
+        权威 primary 以 chat_name 解析；wxid/备注名/原始名等别名仅用于兼容性回退，
+        不在此处逐一枚举探测。
+        """
+        authoritative_key = self._get_messages_key(chat_name)
+        if self._is_redis_available():
+            return 'redis', authoritative_key
+        return 'file', self._get_message_path(chat_name)
+
     def _get_msg_status_key(self, message_id):
         """生成消息状态的 Redis Key"""
         return f"wxbot:{self.wx_id}:msg_status:{message_id}"
+
+    def _get_msg_detail_key(self, message_id):
+        """
+        生成消息可变域详情的 Redis Key（hash）。
+        可变域（status/replied_content/unread/confirm 等）只经此 hash 更新，
+        列表本体仅追加、不 in-place 修改，从而把更新从 O(n) 列表扫描降为 O(1) hash 写。
+        """
+        return f"wxbot:{self.wx_id}:msg_detail:{message_id}"
+
+    def _redis_save_message_detail(self, record_id, record_dict):
+        """持久化消息可变域详情 hash（status/unread/replied_content 等）"""
+        if not self._redis_manager or not record_id:
+            return
+        try:
+            detail_key = self._get_msg_detail_key(record_id)
+            updates = {
+                'status': record_dict.get('status', 'pending'),
+                'unread': record_dict.get('unread', False),
+            }
+            if 'replied_content' in record_dict:
+                updates['replied_content'] = record_dict.get('replied_content')
+            if 'confirm_status' in record_dict:
+                updates['confirm_status'] = record_dict.get('confirm_status')
+            for k, v in updates.items():
+                self._redis_manager.hset(detail_key, k, v)
+        except Exception as e:
+            log(level="WARNING", message=f"Redis 保存消息详情失败: {e}")
+
+    def _get_message_detail(self, message_id):
+        """读取消息可变域详情 hash（可能为空 dict）"""
+        if not self._redis_manager or not message_id:
+            return {}
+        try:
+            raw = self._redis_manager.hgetall(self._get_msg_detail_key(message_id))
+            return raw or {}
+        except Exception:
+            return {}
 
     def _get_pending_confirm_key(self):
         """生成待确认队列的 Redis Key"""
@@ -267,6 +319,8 @@ class MessageStore:
 
             status_key = self._get_msg_status_key(record_dict['id'])
             self._redis_manager.set(status_key, record_dict['status'])
+
+            self._redis_save_message_detail(record_dict['id'], record_dict)
 
             return True
         except Exception as e:
@@ -474,7 +528,7 @@ class MessageStore:
             return (0, 0)
 
     def _redis_get_messages(self, chat_name, count=None):
-        """从 Redis 获取消息列表"""
+        """从 Redis 获取消息列表（可变域 overlay 详情 hash）"""
         if not self._redis_manager:
             return None
         try:
@@ -487,30 +541,49 @@ class MessageStore:
             end = -1 if count is None else min(count - 1, length - 1)
             messages = self._redis_manager.lrange(key, start, end)
 
+            # 将可变域（status/unread/replied_content 等）从详情 hash overlay 到列表记录，
+            # 使最新状态反映到读数中。
+            for msg_data in messages:
+                if not isinstance(msg_data, dict):
+                    continue
+                msg_id = msg_data.get('id')
+                if not msg_id:
+                    continue
+                detail = self._get_message_detail(msg_id)
+                if not detail:
+                    continue
+                for k, v in detail.items():
+                    msg_data[k] = v
+
             return messages
         except Exception as e:
             log(level="WARNING", message=f"Redis 获取消息失败: {e}")
             return None
 
     def _redis_update_message(self, chat_name, message_id, updates):
-        """更新 Redis 中的消息"""
+        """
+        更新 Redis 中的消息（可变域走 msg-detail hash，O(1)，不再逐条扫描列表）
+        """
         if not self._redis_manager:
             return False
         try:
-            key = self._get_messages_key(chat_name)
-            length = self._redis_manager.llen(key)
-            for i in range(length):
-                msg_data = self._redis_manager.lindex(key, i)
-                if msg_data and msg_data.get('id') == message_id:
-                    msg_data.update(updates)
-                    self._redis_manager.lset(key, i, msg_data)
+            if not message_id:
+                return False
+            detail_key = self._get_msg_detail_key(message_id)
 
-                    if 'status' in updates:
-                        status_key = self._get_msg_status_key(message_id)
-                        self._redis_manager.set(status_key, updates['status'])
+            if 'status' in updates:
+                status_key = self._get_msg_status_key(message_id)
+                self._redis_manager.set(status_key, updates['status'])
 
-                    return True
-            return False
+            mutable = {k: v for k, v in updates.items()
+                       if k in ('status', 'unread', 'replied_content', 'confirm_status',
+                                'needs_confirm', 'processed_time',
+                                'reply_content', 'reply_time', 'reply_id')}
+            if mutable:
+                for k, v in mutable.items():
+                    self._redis_manager.hset(detail_key, k, v)
+
+            return True
         except Exception as e:
             log(level="WARNING", message=f"Redis 更新消息失败: {e}")
             return False
@@ -708,43 +781,56 @@ class MessageStore:
 
     def get_all_messages_with_fallback(self, chat_name, wxid=None, count=None):
         """
-        获取指定会话的所有消息，支持多种键名回退查找
+        获取指定会话的所有消息。
+
+        走收敛后的 `_read_source()`：先确认权威 primary（chat_name），命中即读；
+        未命中再做一次兼容性回退（读历史别名位置/文件镜像），不再对全部别名逐条探测。
 
         :param chat_name: 会话名称（备注名）
-        :param wxid: 微信号（可选，用于补充查找）
+        :param wxid: 微信号（可选，仅用于兼容回退）
         :param count: 返回消息数量（None 返回全部）
         :return: MessageRecord 对象列表
         """
         log("DEBUG", f"[MessageStore] get_all_messages_with_fallback 开始，chat_name={chat_name}, wxid={wxid}, count={count}")
-        all_keys = self._get_all_possible_keys(chat_name, wxid)
-        log("DEBUG", f"[MessageStore] 生成的查找键列表: {all_keys}")
-        
-        for key in all_keys:
-            if self._is_redis_available():
+        source, key = self._read_source(chat_name, wxid)
+        log("DEBUG", f"[MessageStore] 权威源: {source}, key={key}")
+        messages = None
+
+        if source == 'redis':
+            try:
+                safe_chat_name = key.split(':')[-1]
+                messages = self._redis_get_messages(safe_chat_name, count)
+                if messages:
+                    log("DEBUG", f"[MessageStore] Redis 权威键命中，{len(messages)} 条")
+                    return [MessageRecord.from_dict(m) for m in messages]
+                log("DEBUG", "[MessageStore] Redis 权威键为空，做兼容性回退")
+            except Exception as e:
+                log("DEBUG", f"[MessageStore] Redis 权威键读取异常: {e}，做兼容性回退")
+
+        # 兼容性回退：兼容历史数据可能存在别名 key（wxid / remark / userName），
+        # 以及 Redis 不可用时落在文件镜像中的数据。仅在权威源未命中时执行。
+        if messages is None or len(messages) == 0:
+            fallback_keys = self._get_all_possible_keys(chat_name, wxid)
+            fallback_keys = [k for k in fallback_keys if k != key and k != self._get_messages_key(chat_name)]
+            for fkey in fallback_keys:
                 try:
-                    safe_chat_name = key.split(':')[-1]
-                    log("DEBUG", f"[MessageStore] 尝试从Redis获取消息，key={key}, safe_chat_name={safe_chat_name}")
-                    messages = self._redis_get_messages(safe_chat_name, count)
-                    if messages and len(messages) > 0:
-                        log("DEBUG", f"[MessageStore] Redis查找成功，找到 {len(messages)} 条消息")
-                        return [MessageRecord.from_dict(m) for m in messages]
-                    else:
-                        log("DEBUG", f"[MessageStore] Redis查找为空，继续尝试下一个键")
+                    safe_chat_name = fkey.split(':')[-1]
+                    fb = self._redis_get_messages(safe_chat_name, count)
+                    if fb:
+                        log("DEBUG", f"[MessageStore] 别名键命中 {fkey}，{len(fb)} 条")
+                        return [MessageRecord.from_dict(m) for m in fb]
                 except Exception as e:
-                    log("DEBUG", f"[MessageStore] Redis查找异常: {e}，继续尝试下一个键")
+                    log("DEBUG", f"[MessageStore] 别名键读取异常: {e}")
                     continue
-            else:
-                log("DEBUG", f"[MessageStore] Redis不可用，跳过Redis查找")
-        
-        log("DEBUG", f"[MessageStore] Redis未找到消息，回退到本地文件查找")
-        path = self._get_message_path(chat_name)
-        log("DEBUG", f"[MessageStore] 本地文件路径: {path}")
-        messages = self._load_messages(path)
-        log("DEBUG", f"[MessageStore] 本地文件加载到 {len(messages)} 条消息")
-        if count is not None:
-            messages = messages[-count:]
-            log("DEBUG", f"[MessageStore] 按count={count}截取后剩余 {len(messages)} 条消息")
-        
+
+            path = self._get_message_path(chat_name)
+            log("DEBUG", f"[MessageStore] 本地文件镜像路径: {path}")
+            file_msgs = self._load_messages(path)
+            if count is not None:
+                file_msgs = file_msgs[-count:]
+            log("DEBUG", f"[MessageStore] 文件镜像加载 {len(file_msgs)} 条")
+            return [MessageRecord.from_dict(m) for m in file_msgs]
+
         return [MessageRecord.from_dict(m) for m in messages]
 
     def get_pending_messages(self, chat_name=None):

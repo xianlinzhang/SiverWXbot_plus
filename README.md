@@ -1,5 +1,7 @@
 # 🤖 Siver WX机器人 (wxbot_plus)
 
+> 版本徽章为显示位，**唯一真实版本来源是 `core/_version.py`**（发版改一处后跑 `python scripts/update_version.py`，勿手抄多写）。
+
 [![Version](https://img.shields.io/badge/version-V4.7.27-blue.svg)](https://github.com/SiverKing/SiverWXbot_plus)
 [![Python](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)

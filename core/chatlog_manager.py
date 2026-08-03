@@ -313,7 +313,7 @@ class ChatlogManager:
                                     self.wx_lock.acquire(holder=f"chatlog_group_keyword_{chat_name}")
                                 self.config.human_delay()
                                 result = self.bot.wx.SendMsg(msg=self.config.keyword_dict[keyword], who=chat_name)
-                                self.bot.msg_replied_count += 1
+                                self.bot._incr_replied()
                                 time.sleep(1)
                             finally:
                                 if self.wx_lock:
@@ -324,85 +324,14 @@ class ChatlogManager:
                 if self.config.group_listen_only:
                     log(message=f"群组 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
                     return result
-                
-                content_without_at = re.sub(self.config.AtMe, "", msg.content).strip()
-                log(message=f"群组 {chat_name} 消息：" + content_without_at)
-                content_with_sender = f"{msg.sender}: {content_without_at}"
-                
-                reply = None
-                try:
-                    history = []
-                    if self.config.memory_switch and self.bot.memory_manager:
-                        history = self.bot.memory_manager.get_messages(chat_name, self.config.memory_context_count)
-                    history = self._enrich_context_with_chatlog(chat_name, history)
-                    
-                    _base_group_prompt = self.bot._get_group_prompt(chat_name)
-                    if self.config.group_split_reply_switch:
-                        _effective_group_prompt = self.bot._build_split_prompt(
-                            _base_group_prompt,
-                            self.config.group_split_max_chars,
-                            self.config.group_split_max_count
-                        )
-                    else:
-                        _effective_group_prompt = _base_group_prompt
-                    
-                    if self.config.group_image_recognition_switch:
-                        if msg.type == 'image':
-                            rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
-                            reply = rec_api.chat(
-                                f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                                prompt=_effective_group_prompt,
-                                history=history,
-                                image_path=msg.content
-                            )
-                        elif '+引用的图片:' in content_without_at:
-                            text_part, img_path = content_without_at.split('+引用的图片:', 1)
-                            rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
-                            reply = rec_api.chat(
-                                f"{msg.sender}: {text_part.strip()}" if text_part.strip() else f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                                prompt=_effective_group_prompt,
-                                history=history,
-                                image_path=img_path.strip()
-                            )
-                        else:
-                            group_api = self.bot._get_group_api(chat_name)
-                            reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
-                    else:
-                        group_api = self.bot._get_group_api(chat_name)
-                        reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
-                except Exception as e:
-                    print(traceback.format_exc())
-                    log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
-                    reply = self.config.api_error_reply
-                
-                if reply == "API返回错误，请稍后再试":
-                    reply = self.config.api_error_reply
-                else:
-                    reply = self.bot._clean_reply_for_send(reply)
-                
-                if self.config.group_split_reply_switch:
-                    parts = self.bot._parse_split_reply(reply, self.config.group_split_max_count)
-                else:
-                    parts = [reply]
-                
-                try:
-                    if self.wx_lock:
-                        self.wx_lock.acquire(holder=f"chatlog_group_send_{chat_name}")
-                    
-                    for i, part in enumerate(parts):
-                        log(message=f"{chat_name} 回复第{i}次：{part}")
-                        self.config.human_delay()
-                        if i == 0 and self.config.group_reply_at_msg:
-                            result = self.bot.wx.SendMsg(msg=part, who=chat_name, at=msg.sender)
-                        else:
-                            result = self.bot.wx.SendMsg(msg=part, who=chat_name)
-                finally:
-                    if self.wx_lock:
-                        self.wx_lock.release(holder=f"chatlog_group_send_{chat_name}")
-                
-                self.bot.msg_replied_count += 1
-                return result
-            
+
+                # 群组 AI 生成 + 发送 → AIWorker，主线程不触碰 AI 网络调用
+                self.bot.enqueue_ai(
+                    lambda: self._chatlog_group_ai_and_send(chat_name, msg),
+                    context=f"Chatlog_group:{chat_name}",
+                )
+                return True
+
             return result
         
         if chat_name == self.config.cmd:
@@ -429,6 +358,87 @@ class ChatlogManager:
         
         result = self.bot._chatlog_send_ai(chat_name, msg)
         return result
+
+    def _chatlog_group_ai_and_send(self, chat_name, msg):
+        """
+        在 AIWorker 线程内执行群组 AI 生成 + 发送。
+        AI 生成与 wx UI 发送都不在监听主线程内执行。
+        """
+        content_without_at = re.sub(self.config.AtMe, "", msg.content).strip()
+        log(message=f"群组 {chat_name} 消息：" + content_without_at)
+        content_with_sender = f"{msg.sender}: {content_without_at}"
+
+        reply = None
+        try:
+            history = []
+            if self.config.memory_switch and self.bot.memory_manager:
+                history = self.bot.memory_manager.get_messages(chat_name, self.config.memory_context_count)
+            history = self._enrich_context_with_chatlog(chat_name, history)
+
+            _base_group_prompt = self.bot._get_group_prompt(chat_name)
+            if self.config.group_split_reply_switch:
+                _effective_group_prompt = self.bot._build_split_prompt(
+                    _base_group_prompt,
+                    self.config.group_split_max_chars,
+                    self.config.group_split_max_count
+                )
+            else:
+                _effective_group_prompt = _base_group_prompt
+
+            if self.config.group_image_recognition_switch:
+                if msg.type == 'image':
+                    rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
+                    reply = rec_api.chat(
+                        f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                        prompt=_effective_group_prompt,
+                        history=history,
+                        image_path=msg.content
+                    )
+                elif '+引用的图片:' in content_without_at:
+                    text_part, img_path = content_without_at.split('+引用的图片:', 1)
+                    rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
+                    reply = rec_api.chat(
+                        f"{msg.sender}: {text_part.strip()}" if text_part.strip() else f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                        prompt=_effective_group_prompt,
+                        history=history,
+                        image_path=img_path.strip()
+                    )
+                else:
+                    group_api = self.bot._get_group_api(chat_name)
+                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+            else:
+                group_api = self.bot._get_group_api(chat_name)
+                reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+        except Exception as e:
+            log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
+            reply = self.config.api_error_reply
+
+        if reply == "API返回错误，请稍后再试":
+            reply = self.config.api_error_reply
+        else:
+            reply = self.bot._clean_reply_for_send(reply)
+
+        if self.config.group_split_reply_switch:
+            parts = self.bot._parse_split_reply(reply, self.config.group_split_max_count)
+        else:
+            parts = [reply]
+
+        try:
+            if self.wx_lock:
+                self.wx_lock.acquire(holder=f"chatlog_group_send_{chat_name}")
+
+            for i, part in enumerate(parts):
+                log(message=f"{chat_name} 回复第{i}次：{part}")
+                self.config.human_delay()
+                if i == 0 and self.config.group_reply_at_msg:
+                    self.bot.wx.SendMsg(msg=part, who=chat_name, at=msg.sender)
+                else:
+                    self.bot.wx.SendMsg(msg=part, who=chat_name)
+        finally:
+            if self.wx_lock:
+                self.wx_lock.release(holder=f"chatlog_group_send_{chat_name}")
+
+        self.bot._incr_replied()
 
     def chatlog_listen_loop(self):
         """

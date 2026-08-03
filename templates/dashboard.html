@@ -735,7 +735,7 @@ body.mobile-nav-open { overflow: hidden; }
       <i class="bi bi-star-fill" style="color:#FFC300;font-size:12px;"></i><span class="topbar-link-text">Github Star</span>
     </a>
     <span class="topbar-username">{{ session.username }}</span>
-    <a href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i><span class="topbar-link-text">退出</span></a>
+    <a href="{{ url_for('auth.logout') }}"><i class="bi bi-box-arrow-right"></i><span class="topbar-link-text">退出</span></a>
   </div>
 </div>
 

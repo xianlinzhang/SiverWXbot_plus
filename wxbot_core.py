@@ -3,14 +3,14 @@
 # 作者：https://www.siver.top
 from wxautox4.utils.useful import check_license
 
-version = "V4.7.27"
-version_log = "V4.7.27 - 优化远程访问、关闭SESSION_COOKIE_HTTPONLY方便内外网访问、优化面板接口测试"
+from core._version import version, version_log
 
 import random
 # ============================================================
 # 标准库导入
 # ============================================================
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -46,6 +46,7 @@ from core.wx_utils import WXUtils
 from core.message_store import MessageStore
 from core.redis_manager import RedisManager
 from core.task_queue import TaskQueue
+from core.ai_worker import AIWorker
 
 # ============================================================
 # wxautox 全局参数配置
@@ -149,6 +150,13 @@ class WXBot:
         # 任务队列（需要 bot.redis_manager）
         self.task_queue = TaskQueue(self)
 
+        # AI 回复工作线程（方案 A：单 worker 串行，AI 生成从主线程解耦）
+        self.ai_worker = AIWorker()
+        # 统计计数线程安全（主循环 / task_queue 回调 / ai_worker / 群组路径多线程触碰）
+        self._count_lock = threading.RLock()
+
+        self._install_forwarders()
+
     def _init_api(self):
         """根据配置中的 api_sdk 字段实例化对应的 AI 接口对象（默认接口）"""
         sdk = self.config.api_sdk
@@ -202,323 +210,6 @@ class WXBot:
         else:
             return OpenAIAPI(tmp)
 
-    def _init_chatlog_client(self):
-        """初始化 Chatlog 客户端（委托给 ChatlogManager）"""
-        return self.chatlog_manager._init_chatlog_client()
-
-    def refresh_chatlog_contacts(self):
-        """刷新 Chatlog 联系人（委托给 ChatlogManager）"""
-        return self.chatlog_manager.refresh_chatlog_contacts()
-
-    # ----------------------------------------------------------
-    # AI 上下文增强（委托给 ChatlogManager）
-    # ----------------------------------------------------------
-
-    def _enrich_context_with_chatlog(self, chat_name, base_history=None):
-        """合并 Chatlog 历史消息增强上下文（委托给 ChatlogManager）"""
-        return self.chatlog_manager._enrich_context_with_chatlog(chat_name, base_history)
-
-    # ----------------------------------------------------------
-    # Chatlog 轮询监听模式（委托给 ChatlogManager）
-    # ----------------------------------------------------------
-
-    def _convert_chatlog_msg(self, msg_dict):
-        """转换 Chatlog 消息格式（委托给 ChatlogManager）"""
-        return self.chatlog_manager._convert_chatlog_msg(msg_dict)
-
-    def chatlog_process_message(self, chat_name, msg_dict):
-        """处理 Chatlog 消息（委托给 ChatlogManager）"""
-        return self.chatlog_manager.chatlog_process_message(chat_name, msg_dict)
-
-    def chatlog_listen_loop(self):
-        """Chatlog 监听循环（委托给 ChatlogManager）"""
-        return self.chatlog_manager.chatlog_listen_loop()
-
-
-
-    def _get_reply_count_key(self, chat, message=None):
-        """获取回复计数 key（委托给 MessageHandler）"""
-        return self.message_handler._get_reply_count_key(chat, message)
-
-    def _get_chat_max_round(self, user_name):
-        """获取私聊回复轮数上限（委托给 MessageHandler）"""
-        return self.message_handler._get_chat_max_round(user_name)
-
-    def _check_chat_max_round_limit(self, chat, user_key):
-        """检查私聊回复轮数限制（委托给 MessageHandler）"""
-        return self.message_handler._check_chat_max_round_limit(chat, user_key)
-
-    def _is_custom_forward_source(self, chat_who):
-        """判断是否为自定义转发来源（委托给 MessageHandler）"""
-        return self.message_handler._is_custom_forward_source(chat_who)
-
-    def _handle_custom_forward(self, chat, message):
-        """处理自定义转发（委托给 MessageHandler）"""
-        return self.message_handler._handle_custom_forward(chat, message)
-
-    # ----------------------------------------------------------
-    # 管理员命令分发
-    # ----------------------------------------------------------
-
-    def process_command(self, chat, message):
-        """命令处理核心逻辑（委托给 CommandHandler）"""
-        return self.command_handler.process_command(chat, message)
-
-    def _build_status_msg(self, chat, message):
-        """构建状态消息（委托给 CommandHandler）"""
-        return self.command_handler._build_status_msg(chat, message)
-
-    def handle_add_user(self, chat, message):
-        """添加用户（委托给 CommandHandler）"""
-        return self.command_handler.handle_add_user(chat, message)
-
-    def handle_remove_user(self, chat, message):
-        """删除用户（委托给 CommandHandler）"""
-        return self.command_handler.handle_remove_user(chat, message)
-
-    def handle_group_switch_status(self, chat, message):
-        """群机器人状态（委托给 CommandHandler）"""
-        return self.command_handler.handle_group_switch_status(chat, message)
-
-    def handle_add_group(self, chat, message):
-        """添加群（委托给 CommandHandler）"""
-        return self.command_handler.handle_add_group(chat, message)
-
-    def handle_remove_group(self, chat, message):
-        """删除群（委托给 CommandHandler）"""
-        return self.command_handler.handle_remove_group(chat, message)
-
-    def handle_enable_group_bot(self, chat, message):
-        """开启群机器人（委托给 CommandHandler）"""
-        return self.command_handler.handle_enable_group_bot(chat, message)
-
-    def handle_disable_group_bot(self, chat, message):
-        """关闭群机器人（委托给 CommandHandler）"""
-        return self.command_handler.handle_disable_group_bot(chat, message)
-
-    def handle_enable_welcome_msg(self, chat, message):
-        """开启欢迎语（委托给 CommandHandler）"""
-        return self.command_handler.handle_enable_welcome_msg(chat, message)
-
-    def handle_disable_welcome_msg(self, chat, message):
-        """关闭欢迎语（委托给 CommandHandler）"""
-        return self.command_handler.handle_disable_welcome_msg(chat, message)
-
-    def handle_welcome_msg_status(self, chat, message):
-        """欢迎语状态（委托给 CommandHandler）"""
-        return self.command_handler.handle_welcome_msg_status(chat, message)
-
-    def handle_change_welcome_msg(self, chat, message):
-        """更改欢迎语（委托给 CommandHandler）"""
-        return self.command_handler.handle_change_welcome_msg(chat, message)
-
-    def handle_list_api_configs(self, chat, message):
-        """列出接口配置（委托给 CommandHandler）"""
-        return self.command_handler.handle_list_api_configs(chat, message)
-
-    def handle_select_api_config(self, chat, message):
-        """选择接口（委托给 CommandHandler）"""
-        return self.command_handler.handle_select_api_config(chat, message)
-
-    def handle_change_prompt(self, chat, message):
-        """更改AI设定（委托给 CommandHandler）"""
-        return self.command_handler.handle_change_prompt(chat, message)
-
-    def handle_list_prompts(self, chat, message):
-        """列出Prompt（委托给 CommandHandler）"""
-        return self.command_handler.handle_list_prompts(chat, message)
-
-    def handle_switch_prompt(self, chat, message):
-        """切换Prompt（委托给 CommandHandler）"""
-        return self.command_handler.handle_switch_prompt(chat, message)
-
-    def handle_clear_memory(self, chat, message):
-        """清除记忆（委托给 CommandHandler）"""
-        return self.command_handler.handle_clear_memory(chat, message)
-
-    def handle_clear_user_memory(self, chat, message):
-        """清除用户记忆（委托给 CommandHandler）"""
-        return self.command_handler.handle_clear_user_memory(chat, message)
-
-    def handle_clear_all_memory(self, chat, message):
-        """清除全部记忆（委托给 CommandHandler）"""
-        return self.command_handler.handle_clear_all_memory(chat, message)
-
-    def handle_image_recognition_status(self, chat, message):
-        """图片识别状态（委托给 CommandHandler）"""
-        return self.command_handler.handle_image_recognition_status(chat, message)
-
-    def handle_split_reply_status(self, chat, message):
-        """拆分回复状态（委托给 CommandHandler）"""
-        return self.command_handler.handle_split_reply_status(chat, message)
-
-    def handle_new_friend_status(self, chat, message):
-        """新好友状态（委托给 CommandHandler）"""
-        return self.command_handler.handle_new_friend_status(chat, message)
-
-    def send_command_list(self, chat):
-        """发送命令列表（委托给 CommandHandler）"""
-        return self.command_handler.send_command_list(chat)
-
-    # ----------------------------------------------------------
-    # 群组辅助功能（委托给 WXUtils）
-    # ----------------------------------------------------------
-
-    def find_new_group_friend(self, msg, flag):
-        """解析新群成员昵称（委托给 WXUtils）"""
-        return self.wx_utils.find_new_group_friend(msg, flag)
-
-    def send_group_welcome_msg(self, chat, message):
-        """发送群欢迎语（委托给 WXUtils）"""
-        return self.wx_utils.send_group_welcome_msg(chat, message)
-
-    # ----------------------------------------------------------
-    # 新好友处理（委托给 WXUtils）
-    # ----------------------------------------------------------
-
-    def is_image_path(self, s: str) -> bool:
-        """判断是否为图片路径（委托给 WXUtils）"""
-        return self.wx_utils.is_image_path(s)
-
-    def _remark_unit_len(self, text):
-        """计算备注长度单位（委托给 WXUtils）"""
-        return WXUtils._remark_unit_len(text)
-
-    def _truncate_remark_units(self, text, max_units):
-        """裁剪备注（委托给 WXUtils）"""
-        return WXUtils._truncate_remark_units(text, max_units)
-
-    def build_new_friend_remark(self, nickname):
-        """生成新好友备注（委托给 WXUtils）"""
-        return self.wx_utils.build_new_friend_remark(nickname)
-
-    def Pass_New_Friends(self):
-        """通过新好友请求（委托给 WXUtils）"""
-        return self.wx_utils.Pass_New_Friends()
-
-    # ----------------------------------------------------------
-    # 定时消息发送（委托给 WXUtils）
-    # ----------------------------------------------------------
-
-    def send_scheduled_msg(self, targets, msgs, repeat_type, weekdays, dates, task_id):
-        """发送定时消息（委托给 WXUtils）"""
-        return self.wx_utils.send_scheduled_msg(targets, msgs, repeat_type, weekdays, dates, task_id)
-
-    # ----------------------------------------------------------
-    # 定时朋友圈发送（委托给 WXUtils）
-    # ----------------------------------------------------------
-
-    def send_scheduled_moments(self, text, images, privacy, tags, repeat_type, weekdays, dates, task_id):
-        """发送定时朋友圈（委托给 WXUtils）"""
-        return self.wx_utils.send_scheduled_moments(text, images, privacy, tags, repeat_type, weekdays, dates, task_id)
-
-    # ----------------------------------------------------------
-    # 随机功能（委托给 WXUtils）
-    # ----------------------------------------------------------
-
-    def _do_moments_like(self):
-        """随机朋友圈点赞（委托给 WXUtils）"""
-        return self.wx_utils._do_moments_like()
-
-    def _check_random_moments(self):
-        """检查随机朋友圈（委托给 WXUtils）"""
-        return self.wx_utils._check_random_moments()
-
-    def _check_random_msg(self):
-        """检查随机消息（委托给 WXUtils）"""
-        return self.wx_utils._check_random_msg()
-
-    # ----------------------------------------------------------
-    # 消息监听模式（委托给 ListenManager）
-    # ----------------------------------------------------------
-
-    def listen_mode(self):
-        """普通监听模式（委托给 ListenManager）"""
-        return self.listen_manager.listen_mode()
-
-    def new_msg_get_plus(self, chat_records):
-        """过滤新消息（委托给 ListenManager）"""
-        return self.listen_manager.new_msg_get_plus(chat_records)
-
-    def next_message_handle(self):
-        """获取下一条消息（委托给 ListenManager）"""
-        return self.listen_manager.next_message_handle()
-
-    def add_chat_to_listen(self, chat):
-        """添加会话监听（委托给 ListenManager）"""
-        return self.listen_manager.add_chat_to_listen(chat)
-
-    def is_chat_listened(self, chat):
-        """判断是否已监听（委托给 ListenManager）"""
-        return self.listen_manager.is_chat_listened(chat)
-
-    def ALLListen_mode(self, last_time, timeout=10):
-        """全局监听模式（委托给 ListenManager）"""
-        return self.listen_manager.ALLListen_mode(last_time, timeout)
-
-    def _is_contact_in_listen_list(self, chat_name, listen_list):
-        """判断是否在监听列表中（委托给 ListenManager）"""
-        return self.listen_manager._is_contact_in_listen_list(chat_name, listen_list)
-
-    # ----------------------------------------------------------
-    # 微信初始化与状态检查（委托给 ListenManager）
-    # ----------------------------------------------------------
-
-    def init_wx_listeners(self):
-        """初始化微信监听器（委托给 ListenManager）"""
-        return self.listen_manager.init_wx_listeners()
-
-    def check_wechat_window(self):
-        """检查微信窗口是否在线（委托给 ListenManager）"""
-        return self.listen_manager.check_wechat_window()
-
-    def _listen_add_error(self, result):
-        """转换监听添加错误码（委托给 ListenManager）"""
-        return self.listen_manager._listen_add_error(result)
-
-    def _get_all_subwindow_names(self):
-        """获取所有监听子窗口名称（委托给 ListenManager）"""
-        return self.listen_manager._get_all_subwindow_names()
-
-    def _try_get_all_subwindow_names(self):
-        """安全获取所有监听子窗口名称（委托给 ListenManager）"""
-        return self.listen_manager._try_get_all_subwindow_names()
-
-    def _get_verified_subwindow(self, nickname):
-        """获取并校验子窗口对象（委托给 ListenManager）"""
-        return self.listen_manager._get_verified_subwindow(nickname)
-
-    # ----------------------------------------------------------
-    # AI 消息处理辅助方法（委托给 MessageHandler）
-    # ----------------------------------------------------------
-
-    def _get_group_api(self, group_name):
-        """获取群组 AI 接口（委托给 MessageHandler）"""
-        return self.message_handler._get_group_api(group_name)
-
-    def _get_chat_prompt(self, user_name):
-        """获取私聊用户 Prompt（委托给 MessageHandler）"""
-        return self.message_handler._get_chat_prompt(user_name)
-
-    def _get_group_prompt(self, group_name):
-        """获取群组 Prompt（委托给 MessageHandler）"""
-        return self.message_handler._get_group_prompt(group_name)
-
-    def _build_split_prompt(self, base_prompt, max_chars, max_count):
-        """构建拆分 Prompt（委托给 MessageHandler）"""
-        return self.message_handler._build_split_prompt(base_prompt, max_chars, max_count)
-
-    def _parse_split_reply(self, reply, max_count):
-        """解析拆分回复（委托给 MessageHandler）"""
-        return self.message_handler._parse_split_reply(reply, max_count)
-
-    def _clean_reply_for_send(self, reply):
-        """清洗回复内容（委托给 MessageHandler）"""
-        return self.message_handler._clean_reply_for_send(reply)
-
-    def _chatlog_send_ai(self, chat_name, message):
-        """Chatlog 模式下发送 AI 回复（委托给 MessageHandler）"""
-        return self.message_handler._chatlog_send_ai(chat_name, message)
 
     # ----------------------------------------------------------
     # 错误报告
@@ -608,6 +299,20 @@ class WXBot:
             "chatlog_connected":      self.chatlog_manager.chatlog_client is not None and self.chatlog_manager.chatlog_client.health_check(),
         }
 
+    def _incr_replied(self, n: int = 1) -> None:
+        """线程安全地递增已回复计数"""
+        with self._count_lock:
+            self.msg_replied_count += n
+
+    def _incr_received(self, n: int = 1) -> None:
+        """线程安全地递增已接收计数"""
+        with self._count_lock:
+            self.msg_received_count += n
+
+    def enqueue_ai(self, job, context: str = "") -> None:
+        """把 AI 生成任务交给 AIWorker（非阻塞），主线程不触碰 AI"""
+        self.ai_worker.enqueue(job, context)
+
     def stop_wxbot(self):
         """安全停止机器人：停止 wxautox 监听并退出主循环"""
         try:
@@ -616,6 +321,8 @@ class WXBot:
                 self.wx.StopListening()
             if hasattr(self, 'task_queue') and self.task_queue:
                 self.task_queue.stop()
+            if hasattr(self, 'ai_worker') and self.ai_worker:
+                self.ai_worker.stop()
             if hasattr(self, 'redis_manager') and self.redis_manager:
                 self.redis_manager.close()
             log(level="WARNING", message='siver_wxbot安全退出！！')
@@ -626,6 +333,11 @@ class WXBot:
             else:
                 self.is_err('wxbot机器人关闭程序执行出错！！', e)
             return False
+
+
+    def _install_forwarders(self):
+        """生成式转发：由 _FORWARD_TABLE 驱动，动态绑定聚合转发方法。"""
+        install_forwarders(type(self))
 
     def main(self):
         """
@@ -777,6 +489,112 @@ class WXBot:
 # ============================================================
 # 程序入口
 # ============================================================
+
+
+# ========================================================================
+# 生成式转发表：WXBot 对外暴露的聚合转发（组合 > 手抄）
+# 新 core 方法只需在对应聚合对象下登记一行，勿手抄转发方法。
+# ========================================================================
+_FORWARD_TABLE = {
+    "chatlog_manager": [
+        "_convert_chatlog_msg",
+        "_enrich_context_with_chatlog",
+        "_init_chatlog_client",
+        "chatlog_listen_loop",
+        "chatlog_process_message",
+        "refresh_chatlog_contacts",
+    ],
+    "command_handler": [
+        "_build_status_msg",
+        "handle_add_group",
+        "handle_add_user",
+        "handle_change_prompt",
+        "handle_change_welcome_msg",
+        "handle_clear_all_memory",
+        "handle_clear_memory",
+        "handle_clear_user_memory",
+        "handle_disable_group_bot",
+        "handle_disable_welcome_msg",
+        "handle_enable_group_bot",
+        "handle_enable_welcome_msg",
+        "handle_group_switch_status",
+        "handle_image_recognition_status",
+        "handle_list_api_configs",
+        "handle_list_prompts",
+        "handle_new_friend_status",
+        "handle_remove_group",
+        "handle_remove_user",
+        "handle_select_api_config",
+        "handle_split_reply_status",
+        "handle_switch_prompt",
+        "handle_welcome_msg_status",
+        "process_command",
+        "send_command_list",
+    ],
+    "listen_manager": [
+        "ALLListen_mode",
+        "_get_all_subwindow_names",
+        "_get_verified_subwindow",
+        "_is_contact_in_listen_list",
+        "_listen_add_error",
+        "_try_get_all_subwindow_names",
+        "add_chat_to_listen",
+        "check_wechat_window",
+        "init_wx_listeners",
+        "is_chat_listened",
+        "listen_mode",
+        "new_msg_get_plus",
+        "next_message_handle",
+    ],
+    "message_handler": [
+        "_build_split_prompt",
+        "_chatlog_send_ai",
+        "_check_chat_max_round_limit",
+        "_clean_reply_for_send",
+        "_get_chat_max_round",
+        "_get_chat_prompt",
+        "_get_group_api",
+        "_get_group_prompt",
+        "_get_reply_count_key",
+        "_handle_custom_forward",
+        "_is_custom_forward_source",
+        "_parse_split_reply",
+        "process_message",
+        "wx_send_ai",
+    ],
+    "wx_utils": [
+        "Pass_New_Friends",
+        "_check_random_moments",
+        "_check_random_msg",
+        "_do_moments_like",
+        "_remark_unit_len",
+        "_truncate_remark_units",
+        "build_new_friend_remark",
+        "find_new_group_friend",
+        "is_image_path",
+        "send_group_welcome_msg",
+        "send_scheduled_moments",
+        "send_scheduled_msg",
+    ],
+}
+
+
+def _make_forwarder(agg_attr, name):
+    def _forward(self, *args, **kwargs):
+        return getattr(getattr(self, agg_attr), name)(*args, **kwargs)
+    _forward.__name__ = name
+    _forward.__qualname__ = "WXBot.%s" % name
+    _forward.__doc__ = "%s（生成式转发：委托给 self.%s.%s，由 _FORWARD_TABLE 自动生成）" % (name, agg_attr, name)
+    return _forward
+
+
+def install_forwarders(cls):
+    for agg_attr, names in _FORWARD_TABLE.items():
+        for name in names:
+            setattr(cls, name, _make_forwarder(agg_attr, name))
+
+
 if __name__ == "__main__":
     bot = WXBot()
     bot.run()
+

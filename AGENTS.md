@@ -22,7 +22,7 @@
 - `config/config.json`：全部业务配置，`keyword_dict` 是同城信息关键词应答表（提供车/求车/招聘/求职/出售/出租 → 固定回复）。配置支持运行时热重载（面板保存或 `/更新配置`）。
 - Prompt 存 `config/prompt/*.md`，文件名即 Prompt 名；用户/群可通过 `chat_prompt_map`/`group_prompt_map` 单独绑定（本部署：主号 → `客服助手`，API 索引 0）。
 - 当前部署关键开关：`chatlog_listen_switch=true`（Chatlog 监听）、`redis_enabled=true`、`memory_switch=true`、`chat_keyword_switch=true`。
-- 版本号在**两处**同步修改：`wxbot_core.py` 顶部 `version`/`version_log` + `docs/version.json`（web_server 从 wxbot_core 导入）。
+- 版本号**单一事实源**：`core/_version.py`（`version`/`version_log`）。发版只改这一处，再跑 `python scripts/update_version.py` 自动同步 `docs/version.json`。`wxbot_core` / `core/ai_api`（user-agent）/ `web_server` 均从此处导入，**勿手抄多写**（README/docs 徽章仍为手动显示位，见脚本提示）。
 
 ## 运行前置（改代码前先确认环境）
 

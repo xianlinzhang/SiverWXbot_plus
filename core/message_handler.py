@@ -104,7 +104,7 @@ class MessageHandler:
 
         result = chat.SendMsg(self.config.chat_max_round_reply)
         if self.bot.reply_count_store.was_send_success(result):
-            self.bot.msg_replied_count += 1
+            self.bot._incr_replied()
             if self.config.chat_max_round_reply_once:
                 self.bot.reply_count_store.mark_limit_notified(user_key)
         return True, result
@@ -193,65 +193,100 @@ class MessageHandler:
             log(message=f"Chatlog 私聊 {chat_name} 消息已加入待确认队列，需人工确认后才会回复")
             return True
 
+        # 关键字应答：无需调 AI，派发线程（主线程）直接处理
+        if self.config.chat_keyword_switch:
+            _kw = self._match_keyword(message.content)
+            if _kw:
+                log(message=f"私聊 {chat_name} 关键字消息：" + message.content)
+                self._send_reply_segments(
+                    chat_name=chat_name,
+                    reply=_kw,
+                    msg_id=msg_id,
+                    api_error_reply=False,
+                    api_error_should_mark=False,
+                    user_key=chat_name,
+                )
+                return True
+
+        # 只监听不 AI 回复：派发线程直接标记完成
+        if self.config.chat_listen_only:
+            log(message=f"私聊 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
+            if self.message_store and msg_id:
+                self.message_store.set_message_status(chat_name, msg_id, "processed")
+            return True
+
+        # 真正需要调 AI 的生成部分 → AIWorker，主线程不触碰 AI 网络调用
+        self.bot.enqueue_ai(
+            lambda: self._ai_generate_and_send(
+                chat_name=chat_name,
+                message=message,
+                msg_id=msg_id,
+                is_group=False,
+            ),
+            context=f"Chatlog_chat:{chat_name}",
+        )
+        return True
+
+    def _match_keyword(self, content):
+        """在 keyword_dict 中匹配关键词，命中返回回复内容，否则返回 None"""
+        if not self.config.chat_keyword_switch:
+            return None
+        for keyword in self.config.keyword_dict:
+            if keyword in content:
+                return self.config.keyword_dict[keyword]
+        return None
+
+    def _ai_generate_and_send(self, chat_name, message, msg_id, is_group=False, user_key=None, api_error_once=False, max_round_switch=False):
+        """
+        在 AIWorker 线程内执行 AI 生成 + 分段发送提交（私聊路径）。
+        不触碰 wxautox UI 生成；发送仍通过 task_queue 异步。
+        """
+        api_error_reply = False
+        api_error_should_mark = False
         reply = None
         try:
-            is_keyword = False
-            if self.config.chat_keyword_switch:
-                for keyword in self.config.keyword_dict:
-                    if keyword in message.content:
-                        is_keyword = True
-                        log(message=f"私聊 {chat_name} 关键字消息：" + message.content)
-                        reply = self.config.keyword_dict[keyword]
+            history = []
+            if self.config.memory_switch and self.bot.memory_manager:
+                history = self.bot.memory_manager.get_messages(
+                    chat_name, self.config.memory_context_count
+                )
+            history = self.bot._enrich_context_with_chatlog(chat_name, history)
 
-            if not is_keyword:
-                if self.config.chat_listen_only:
-                    log(message=f"私聊 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
-                    if self.message_store and msg_id:
-                        self.message_store.set_message_status(chat_name, msg_id, "processed")
-                    return True
+            _base_prompt = self._get_chat_prompt(chat_name)
+            if self.config.chat_split_reply_switch:
+                _effective_prompt = self._build_split_prompt(
+                    _base_prompt,
+                    self.config.chat_split_max_chars,
+                    self.config.chat_split_max_count
+                )
+            else:
+                _effective_prompt = _base_prompt
 
-                history = []
-                if self.config.memory_switch and self.bot.memory_manager:
-                    history = self.bot.memory_manager.get_messages(chat_name, self.config.memory_context_count)
-
-                history = self.bot._enrich_context_with_chatlog(chat_name, history)
-
-                _base_prompt = self._get_chat_prompt(chat_name)
-                if self.config.chat_split_reply_switch:
-                    _effective_prompt = self._build_split_prompt(
-                        _base_prompt,
-                        self.config.chat_split_max_chars,
-                        self.config.chat_split_max_count
+            if self.config.chat_image_recognition_switch:
+                if message.type == 'image':
+                    rec_api = self.bot._init_api_by_index(self.config.chat_image_recognition_api)
+                    reply = rec_api.chat(
+                        "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                        prompt=_effective_prompt,
+                        history=history,
+                        image_path=message.content
                     )
-                else:
-                    _effective_prompt = _base_prompt
-
-                if self.config.chat_image_recognition_switch:
-                    if message.type == 'image':
-                        rec_api = self.bot._init_api_by_index(self.config.chat_image_recognition_api)
-                        reply = rec_api.chat(
-                            "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                            prompt=_effective_prompt,
-                            history=history,
-                            image_path=message.content
-                        )
-                    elif '+引用的图片:' in message.content:
-                        text_part, img_path = message.content.split('+引用的图片:', 1)
-                        rec_api = self.bot._init_api_by_index(self.config.chat_image_recognition_api)
-                        reply = rec_api.chat(
-                            text_part.strip() or "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                            prompt=_effective_prompt,
-                            history=history,
-                            image_path=img_path.strip()
-                        )
-                    else:
-                        reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
-                        log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
+                elif '+引用的图片:' in message.content:
+                    text_part, img_path = message.content.split('+引用的图片:', 1)
+                    rec_api = self.bot._init_api_by_index(self.config.chat_image_recognition_api)
+                    reply = rec_api.chat(
+                        text_part.strip() or "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                        prompt=_effective_prompt,
+                        history=history,
+                        image_path=img_path.strip()
+                    )
                 else:
                     reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
                     log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
+            else:
+                reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
+                log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
         except Exception as e:
-            print(traceback.format_exc())
             log(level="ERROR", message=str(e) + "\nAPI返回错误，请稍后再试")
             api_error_reply = True
             reply = self.config.api_error_reply
@@ -262,6 +297,19 @@ class MessageHandler:
         else:
             reply = self._clean_reply_for_send(reply)
 
+        self._send_reply_segments(
+            chat_name=chat_name,
+            reply=reply,
+            msg_id=msg_id,
+            api_error_reply=api_error_reply,
+            api_error_should_mark=api_error_should_mark,
+            user_key=user_key or chat_name,
+            api_error_once=api_error_once,
+            max_round_switch=max_round_switch,
+        )
+
+    def _send_reply_segments(self, chat_name, reply, msg_id, api_error_reply, api_error_should_mark, user_key, api_error_once=False, max_round_switch=False):
+        """清洗、拆分、分片经 task_queue 发送（可在 AIWorker 线程内执行），并按需回写存储。"""
         if self.config.chat_split_reply_switch:
             parts = self._parse_split_reply(reply, self.config.chat_split_max_count)
         else:
@@ -277,13 +325,21 @@ class MessageHandler:
         if not all_segments:
             if self.message_store and msg_id:
                 self.message_store.set_message_status(chat_name, msg_id, "processed")
-            return True
+            return
 
         final_reply = reply
         final_msg_id = msg_id
         final_chat_name = chat_name
+        final_user_key = user_key
+        final_api_error_should_mark = api_error_should_mark
 
         def _send_msg_callback(success, result, params):
+            if success and final_api_error_should_mark:
+                self.bot.reply_count_store.mark_api_err_notified(final_user_key)
+
+            if success and max_round_switch and final_user_key and not api_error_reply:
+                self.bot.reply_count_store.increment_ai_count(final_user_key)
+
             if self.message_store and final_msg_id and success:
                 self.message_store.bind_reply(
                     final_chat_name,
@@ -294,7 +350,7 @@ class MessageHandler:
             elif self.message_store and final_msg_id:
                 self.message_store.set_message_status(final_chat_name, final_msg_id, "processed")
 
-            self.bot.msg_replied_count += 1
+            self.bot._incr_replied()
 
         def _submit_segment(index):
             if index >= len(all_segments):
@@ -306,7 +362,7 @@ class MessageHandler:
                 'who': chat_name,
                 'msg': segment,
                 'msg_id': msg_id,
-                'user_key': chat_name,
+                'user_key': user_key or chat_name,
                 'api_error_reply': api_error_reply,
             }
 
@@ -323,7 +379,87 @@ class MessageHandler:
             )
 
         _submit_segment(0)
-        return True
+
+    def _cb_group_ai_and_send(self, chat, message):
+        """
+        在 AIWorker 线程内执行（非 Chatlog 回调路径的）群组 AI 生成 + 发送。
+        AI 网络调用与发送都不在 wxautox 回调线程内执行。
+        """
+        if self.config.group_listen_only:
+            return
+        content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
+        log(message=f"群组 {chat.who} 消息：" + content_without_at)
+        content_with_sender = f"{message.sender}: {content_without_at}"
+        reply = None
+        try:
+            history = []
+            if self.config.memory_switch and self.bot.memory_manager:
+                history = self.bot.memory_manager.get_messages(
+                    chat.who, self.config.memory_context_count
+                )
+            history = self.bot._enrich_context_with_chatlog(chat.who, history)
+
+            _base_group_prompt = self._get_group_prompt(chat.who)
+            if self.config.group_split_reply_switch:
+                _effective_group_prompt = self._build_split_prompt(
+                    _base_group_prompt,
+                    self.config.group_split_max_chars,
+                    self.config.group_split_max_count
+                )
+            else:
+                _effective_group_prompt = _base_group_prompt
+            if self.config.group_image_recognition_switch:
+                if message.type == 'image':
+                    rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
+                    reply = rec_api.chat(
+                        f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                        prompt=_effective_group_prompt,
+                        history=history,
+                        image_path=message.content
+                    )
+                elif '+引用的图片:' in content_without_at:
+                    text_part, img_path = content_without_at.split('+引用的图片:', 1)
+                    rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
+                    reply = rec_api.chat(
+                        f"{message.sender}: {text_part.strip()}" if text_part.strip() else f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
+                        prompt=_effective_group_prompt,
+                        history=history,
+                        image_path=img_path.strip()
+                    )
+                else:
+                    group_api = self._get_group_api(chat.who)
+                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+            else:
+                group_api = self._get_group_api(chat.who)
+                reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+        except Exception as e:
+            log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
+            reply = "API返回错误，请稍后再试"
+
+        if reply == "API返回错误，请稍后再试":
+            reply = self.config.api_error_reply
+        else:
+            reply = self._clean_reply_for_send(reply)
+
+        if self.config.group_split_reply_switch:
+            parts = self._parse_split_reply(reply, self.config.group_split_max_count)
+        else:
+            parts = [reply]
+
+        _at_msg = self.config.group_reply_at_msg
+        _quote = self.config.group_reply_quote
+        for i, part in enumerate(parts):
+            self.config.human_delay()
+            if i == 0 and _quote and _at_msg:
+                message.quote(part, at=message.sender)
+            elif i == 0 and _quote:
+                message.quote(part)
+            elif _at_msg:
+                chat.SendMsg(msg=part, at=message.sender if i == 0 else None)
+            else:
+                chat.SendMsg(msg=part)
+
+        self.bot._incr_replied()
 
     def _extract_message_time_from_control(self, msg):
         """
@@ -426,7 +562,7 @@ class MessageHandler:
                                 log("WARNING", "消息自动语音转文字失败")
                 except Exception as e:
                     log(level="ERROR", message=f"message_handle_callback下载图片出错,请尝试将windows设置屏幕缩放设置为100%后再尝试: {e}")
-                self.bot.msg_received_count += 1
+                self.bot._incr_received()
                 self.bot.last_msg_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
                 self.bot.last_msg_sender = msg.sender
 
@@ -459,7 +595,7 @@ class MessageHandler:
 
             elif msg.attr == "self":
                 if chat.who == self.config.cmd:
-                    self.bot.msg_received_count += 1
+                    self.bot._incr_received()
                     self.bot.last_msg_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
                     self.bot.last_msg_sender = msg.sender
                     result = self.bot.process_command(chat, msg)
@@ -521,7 +657,7 @@ class MessageHandler:
                             log(message=f"群组 {chat.who} 关键字消息：" + message.content)
                             self.config.human_delay()
                             result = chat.SendMsg(msg=self.config.keyword_dict[keyword])
-                            self.bot.msg_replied_count += 1
+                            self.bot._incr_replied()
                             time.sleep(1)
                             return result
 
@@ -530,80 +666,11 @@ class MessageHandler:
                 if self.config.group_listen_only:
                     log(message=f"群组 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
                     return result
-                content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
-                log(message=f"群组 {chat.who} 消息：" + content_without_at)
-                content_with_sender = f"{message.sender}: {content_without_at}"
-                try:
-                    history = []
-                    if self.config.memory_switch and self.bot.memory_manager:
-                        history = self.bot.memory_manager.get_messages(
-                            chat.who, self.config.memory_context_count
-                        )
-
-                    history = self.bot._enrich_context_with_chatlog(chat.who, history)
-
-                    _base_group_prompt = self._get_group_prompt(chat.who)
-                    if self.config.group_split_reply_switch:
-                        _effective_group_prompt = self._build_split_prompt(
-                            _base_group_prompt,
-                            self.config.group_split_max_chars,
-                            self.config.group_split_max_count
-                        )
-                    else:
-                        _effective_group_prompt = _base_group_prompt
-                    if self.config.group_image_recognition_switch:
-                        if message.type == 'image':
-                            rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
-                            reply = rec_api.chat(
-                                f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                                prompt=_effective_group_prompt,
-                                history=history,
-                                image_path=message.content
-                            )
-                        elif '+引用的图片:' in content_without_at:
-                            text_part, img_path = content_without_at.split('+引用的图片:', 1)
-                            rec_api = self.bot._init_api_by_index(self.config.group_image_recognition_api)
-                            reply = rec_api.chat(
-                                f"{message.sender}: {text_part.strip()}" if text_part.strip() else f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                                prompt=_effective_group_prompt,
-                                history=history,
-                                image_path=img_path.strip()
-                            )
-                        else:
-                            group_api = self._get_group_api(chat.who)
-                            reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
-                    else:
-                        group_api = self._get_group_api(chat.who)
-                        reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
-                except Exception as e:
-                    print(traceback.format_exc())
-                    log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
-                    reply = "API返回错误，请稍后再试"
-
-                if reply == "API返回错误，请稍后再试":
-                    reply = self.config.api_error_reply
-                else:
-                    reply = self._clean_reply_for_send(reply)
-
-                if self.config.group_split_reply_switch:
-                    parts = self._parse_split_reply(reply, self.config.group_split_max_count)
-                else:
-                    parts = [reply]
-
-                _at_msg = self.config.group_reply_at_msg
-                _quote = self.config.group_reply_quote
-                for i, part in enumerate(parts):
-                    self.config.human_delay()
-                    if i == 0 and _quote and _at_msg:
-                        result = message.quote(part, at=message.sender)
-                    elif i == 0 and _quote:
-                        result = message.quote(part)
-                    elif _at_msg:
-                        result = chat.SendMsg(msg=part, at=message.sender if i == 0 else None)
-                    else:
-                        result = chat.SendMsg(msg=part)
-
-                self.bot.msg_replied_count += 1
+                # 群组 AI 生成 + 发送 → AIWorker，回调线程不触碰 AI 网络调用
+                self.bot.enqueue_ai(
+                    lambda: self._cb_group_ai_and_send(chat, message),
+                    context=f"group:{chat.who}",
+                )
                 return result
 
             return result
@@ -653,162 +720,46 @@ class MessageHandler:
             log(message=f"私聊 {chat.who} 消息已加入待确认队列，需人工确认后才会回复")
             return True
 
-        api_error_reply = False
         api_error_should_mark = False
-        reply = None
-        try:
-            is_keyword = False
-            if self.config.chat_keyword_switch:
-                for keyword in self.config.keyword_dict:
-                    if keyword in message.content:
-                        is_keyword = True
-                        log(message=f"私聊 {chat.who} 关键字消息：" + message.content)
-                        reply = self.config.keyword_dict[keyword]
-            if not is_keyword:
-                if self.config.chat_listen_only:
-                    log(message=f"私聊 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
-                    if self.message_store and msg_id:
-                        self.message_store.set_message_status(chat.who, msg_id, "processed")
-                    return True
-                limit_handled, limit_result = self._check_chat_max_round_limit(chat, user_key)
-                if limit_handled:
-                    if self.message_store and msg_id:
-                        self.message_store.set_message_status(chat.who, msg_id, "processed")
-                    return limit_result
 
-                history = []
-                if self.config.memory_switch and self.bot.memory_manager:
-                    history = self.bot.memory_manager.get_messages(
-                        chat.who, self.config.memory_context_count
-                    )
+        # 关键字应答：无需调 AI，派发线程直接处理
+        if self.config.chat_keyword_switch:
+            _kw = self._match_keyword(message.content)
+            if _kw:
+                log(message=f"私聊 {chat.who} 关键字消息：" + message.content)
+                self._send_reply_segments(
+                    chat_name=chat.who,
+                    reply=_kw,
+                    msg_id=msg_id,
+                    api_error_reply=False,
+                    api_error_should_mark=False,
+                    user_key=user_key,
+                )
+                return True
 
-                history = self.bot._enrich_context_with_chatlog(chat.who, history)
-
-                _base_prompt = self._get_chat_prompt(chat.who)
-                if self.config.chat_split_reply_switch:
-                    _effective_prompt = self._build_split_prompt(
-                        _base_prompt,
-                        self.config.chat_split_max_chars,
-                        self.config.chat_split_max_count
-                    )
-                else:
-                    _effective_prompt = _base_prompt
-                if self.config.chat_image_recognition_switch:
-                    if message.type == 'image':
-                        rec_api = self.bot._init_api_by_index(self.config.chat_image_recognition_api)
-                        reply = rec_api.chat(
-                            "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                            prompt=_effective_prompt,
-                            history=history,
-                            image_path=message.content
-                        )
-                    elif '+引用的图片:' in message.content:
-                        text_part, img_path = message.content.split('+引用的图片:', 1)
-                        rec_api = self.bot._init_api_by_index(self.config.chat_image_recognition_api)
-                        reply = rec_api.chat(
-                            text_part.strip() or "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
-                            prompt=_effective_prompt,
-                            history=history,
-                            image_path=img_path.strip()
-                        )
-                    else:
-                        reply = self._get_chat_api(chat.who).chat(message.content, prompt=_effective_prompt, history=history)
-                else:
-                    reply = self._get_chat_api(chat.who).chat(message.content, prompt=_effective_prompt, history=history)
-        except Exception as e:
-            print(traceback.format_exc())
-            log(level="ERROR", message=str(e) + "\nAPI返回错误，请稍后再试")
-            api_error_reply = True
-            if self.config.api_error_reply_once and user_key:
-                user_data = self.bot.reply_count_store.get_user(user_key)
-                if user_data.get("api_err_notified"):
-                    if self.message_store and msg_id:
-                        self.message_store.set_message_status(chat.who, msg_id, "processed")
-                    return True
-                api_error_should_mark = True
-            reply = self.config.api_error_reply
-
-        if reply == "API返回错误，请稍后再试":
-            if self.config.api_error_reply_once and user_key:
-                user_data = self.bot.reply_count_store.get_user(user_key)
-                if user_data.get("api_err_notified"):
-                    if self.message_store and msg_id:
-                        self.message_store.set_message_status(chat.who, msg_id, "processed")
-                    return True
-                api_error_should_mark = True
-            reply = self.config.api_error_reply
-            api_error_reply = True
-        else:
-            reply = self._clean_reply_for_send(reply)
-
-        if self.config.chat_split_reply_switch:
-            parts = self._parse_split_reply(reply, self.config.chat_split_max_count)
-        else:
-            parts = [reply]
-
-        all_segments = []
-        for part in parts:
-            if len(part) >= 2000:
-                all_segments.extend(self.config.split_long_text(part))
-            else:
-                all_segments.append(part)
-
-        if not all_segments:
+        # 只监听不 AI 回复 / 回复轮数超限：派发线程直接标记
+        if self.config.chat_listen_only:
+            log(message=f"私聊 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
             if self.message_store and msg_id:
                 self.message_store.set_message_status(chat.who, msg_id, "processed")
             return True
+        limit_handled, limit_result = self._check_chat_max_round_limit(chat, user_key)
+        if limit_handled:
+            if self.message_store and msg_id:
+                self.message_store.set_message_status(chat.who, msg_id, "processed")
+            return limit_result
 
-        final_reply = reply
-        final_msg_id = msg_id
-        final_user_key = user_key
-        final_api_error_reply = api_error_reply
-        final_api_error_should_mark = api_error_should_mark
-        final_who = chat.who
-
-        def _send_msg_callback(success, result, params):
-            if success and final_api_error_should_mark:
-                self.bot.reply_count_store.mark_api_err_notified(final_user_key)
-
-            if success and self.config.chat_max_round_switch and final_user_key and not final_api_error_reply:
-                self.bot.reply_count_store.increment_ai_count(final_user_key)
-
-            if self.message_store and final_msg_id and success:
-                self.message_store.bind_reply(
-                    final_who,
-                    final_msg_id,
-                    final_reply,
-                    datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
-                )
-            elif self.message_store and final_msg_id:
-                self.message_store.set_message_status(final_who, final_msg_id, "processed")
-
-            self.bot.msg_replied_count += 1
-
-        def _submit_segment(index):
-            if index >= len(all_segments):
-                _send_msg_callback(True, None, {})
-                return
-
-            segment = all_segments[index]
-            params = {
-                'who': chat.who,
-                'msg': segment,
-                'msg_id': msg_id,
-                'user_key': user_key,
-                'api_error_reply': api_error_reply,
-            }
-
-            def _segment_callback(success, result, segment_params):
-                if success:
-                    _submit_segment(index + 1)
-                else:
-                    _send_msg_callback(False, result, segment_params)
-
-            self.bot.task_queue.submit(
-                task_type='send_msg',
-                params=params,
-                callback=_segment_callback,
-            )
-
-        _submit_segment(0)
+        # 真正需要调 AI 的生成部分 → AIWorker
+        self.bot.enqueue_ai(
+            lambda: self._ai_generate_and_send(
+                chat_name=chat.who,
+                message=message,
+                msg_id=msg_id,
+                is_group=False,
+                user_key=user_key,
+                api_error_once=self.config.api_error_reply_once,
+                max_round_switch=self.config.chat_max_round_switch,
+            ),
+            context=f"chat:{chat.who}",
+        )
         return True

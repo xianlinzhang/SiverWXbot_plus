@@ -308,6 +308,54 @@ class RedisManager:
             elif method == 'hgetall':
                 name = args[0] if args else kwargs.get('name')
                 result = self._fallback_data.get(name, {})
+            elif method == 'zrangebyscore':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                min = args[1] if len(args) > 1 else kwargs.get('min', '-inf')
+                max = args[2] if len(args) > 2 else kwargs.get('max', '+inf')
+                start = args[3] if len(args) > 3 else kwargs.get('start', 0)
+                num = args[4] if len(args) > 4 else kwargs.get('num', None)
+                data = self._fallback_data.get(name, [])
+                filtered = []
+                for item in data:
+                    score = item.get('score') if isinstance(item, dict) else 0
+                    if not isinstance(score, (int, float)):
+                        continue
+                    if (min == '-inf' or score >= min) and (max == '+inf' or score <= max):
+                        filtered.append(item['member'])
+                filtered.sort(key=lambda m: next(
+                    (i.get('score', 0) for i in data if isinstance(i, dict) and i.get('member') == m), 0))
+                if num is None:
+                    result = filtered[start:]
+                else:
+                    result = filtered[start:start + num]
+            elif method == 'zrem':
+                name = args[0] if len(args) > 0 else kwargs.get('name')
+                members = args[1:] if len(args) > 1 else kwargs.get('members', ())
+                data = self._fallback_data.get(name, [])
+                if isinstance(data, list):
+                    member_set = set(members)
+                    before = len(data)
+                    self._fallback_data[name] = [i for i in data if not (isinstance(i, dict) and i.get('member') in member_set)]
+                    result = before - len(self._fallback_data[name])
+                    self._save_fallback_data()
+                else:
+                    result = 0
+            elif method == 'zcard':
+                name = args[0] if args else kwargs.get('name')
+                result = len(self._fallback_data.get(name, []))
+            elif method == 'type':
+                name = args[0] if args else kwargs.get('name')
+                value = self._fallback_data.get(name)
+                if value is None:
+                    result = None
+                elif isinstance(value, dict) and all(isinstance(v, dict) for v in value.values()):
+                    result = 'hash'
+                elif isinstance(value, list) and all(isinstance(i, dict) and 'member' in i for i in value):
+                    result = 'zset'
+                elif isinstance(value, list):
+                    result = 'list'
+                else:
+                    result = 'string'
             return result
 
     def is_available(self) -> bool:
@@ -413,7 +461,7 @@ class RedisManager:
             return self._execute_fallback('hset', name=name, key=key, value=value)
 
         def _hset():
-            serialized = json.dumps(value) if isinstance(value, (dict, list)) else value
+            serialized = json.dumps(value, ensure_ascii=False) if isinstance(value, bool) or not isinstance(value, (str, bytes, int, float)) else value
             return self._client.hset(name, key, serialized)
 
         return self._execute_with_retry(_hset)
@@ -661,6 +709,82 @@ class RedisManager:
             return self._execute_fallback('zrange', name=name, start=start, end=end, withscores=withscores)
 
         return self._execute_with_retry(self._client.zrange, name, start, end, withscores=withscores)
+
+    def zrangebyscore(self, name: str, min: float = '-inf', max: float = '+inf', start: int = 0, num: Optional[int] = None) -> List[str]:
+        """
+        返回有序集合中分数区间 [min, max] 内的成员（升序）。
+
+        Args:
+            name: 有序集合名称
+            min: 最小分数（含）
+            max: 最大分数（含）
+            start: 从第几个开始（默认0）
+            num: 返回数量
+
+        Returns:
+            List[str]: 成员列表
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('zrangebyscore', name=name, min=min, max=max, start=start, num=num)
+
+        def _zrangebyscore():
+            if num is None:
+                raw = self._client.zrangebyscore(name, min, max)
+            else:
+                raw = self._client.zrangebyscore(name, min, max, start=start, num=num)
+            return [v.decode('utf-8') if isinstance(v, bytes) else v for v in raw]
+
+        return self._execute_with_retry(_zrangebyscore)
+
+    def zrem(self, name: str, *members: str) -> int:
+        """
+        从有序集合中移除一个或多个成员。
+
+        Args:
+            name: 有序集合名称
+            *members: 要移除的成员
+
+        Returns:
+            int: 被移除的成员数量
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('zrem', name=name, members=members)
+
+        return self._execute_with_retry(self._client.zrem, name, *members)
+
+    def zcard(self, name: str) -> int:
+        """
+        返回有序集合的成员数量。
+
+        Args:
+            name: 有序集合名称
+
+        Returns:
+            int: 成员数量
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('zcard', name=name)
+
+        return self._execute_with_retry(self._client.zcard, name)
+
+    def type(self, name: str) -> Optional[str]:
+        """
+        返回键的类型（'zset' / 'list' / 'hash' / 'string' 等），键不存在返回 None。
+
+        Args:
+            name: 键名
+
+        Returns:
+            Optional[str]: 键类型
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('type', name=name)
+
+        def _type():
+            raw = self._client.type(name)
+            return raw.decode('utf-8') if isinstance(raw, bytes) else raw
+
+        return self._execute_with_retry(_type)
 
     def delete(self, *names: str) -> int:
         """

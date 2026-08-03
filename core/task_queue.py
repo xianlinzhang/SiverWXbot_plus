@@ -9,6 +9,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .redis_manager import RedisManager
 
+# ZSET score 编码：priority * SCORE_PRIO_BASE + submit 序号，保证同优先级 FIFO、
+# 不同优先级按数值小优先，且同分不相互覆盖。
+SCORE_PRIO_BASE = 10 ** 13
+
 
 @dataclass
 class WXTask:
@@ -71,6 +75,9 @@ class TaskQueue:
         self._history_key = f'wxbot:{self.wx_id}:tasks:history'
         self._current_key = f'wxbot:{self.wx_id}:tasks:current'
 
+        # 提交序号（同一进程内单调递增），用于 ZSET score 唯一化实现同优先级 FIFO
+        self._submit_seq = 0
+
         self._task_handlers = {
             'send_msg': self._handle_send_msg,
             'send_moments': self._handle_send_moments,
@@ -79,7 +86,52 @@ class TaskQueue:
             'send_file': self._handle_send_file,
         }
 
+        self._migrate_pending_list_to_zset()
         self._start_worker()
+
+    def _migrate_pending_list_to_zset(self) -> None:
+        """
+        将旧的 List 结构 pending 队列一次性迁移为 ZSET。
+
+        - 兼容字段 `_pending_key` 不变，仅结构迁移。
+        - 若 pending key 已是 ZSET / 不存在 / Redis fallback 存储无法判断，则跳过。
+        - 迁移失败（如 Redis 不可用）容忍，从零开始。
+        """
+        try:
+            key_type = self.redis.type(self._pending_key)
+            if key_type and key_type != 'list':
+                return
+            if not key_type:
+                return
+        except Exception as e:
+            self._logger.warning(f"Pending queue migration: skip type check ({e})")
+            return
+
+        try:
+            old_items = self.redis.lrange(self._pending_key, 0, -1) or []
+            if not isinstance(old_items, list) or not old_items:
+                return
+            mapping = {}
+            for item in reversed(old_items):
+                if not isinstance(item, dict):
+                    continue
+                task_id = item.get('task_id')
+                if not task_id:
+                    continue
+                priority = item.get('priority', 5)
+                try:
+                    priority = int(priority)
+                except (TypeError, ValueError):
+                    priority = 5
+                self._submit_seq += 1
+                mapping[task_id] = priority * SCORE_PRIO_BASE + self._submit_seq
+            if mapping:
+                # Redis 不允许对 List 类型 key 直接 zadd，需先删除旧 List
+                self.redis.delete(self._pending_key)
+                self.redis.zadd(self._pending_key, mapping)
+                self._logger.info(f"Pending queue migrated from List to ZSET: {len(mapping)} tasks")
+        except Exception as e:
+            self._logger.warning(f"Pending queue migration failed, starting fresh: {e}")
 
     def _start_worker(self) -> None:
         """启动工作线程"""
@@ -140,8 +192,10 @@ class TaskQueue:
             with self._lock:
                 self._callbacks[task_id] = callback
 
-        priority_data = {'task_id': task_id, 'priority': priority, 'create_time': now}
-        self.redis.lpush(self._pending_key, priority_data)
+        with self._lock:
+            self._submit_seq += 1
+            score = priority * SCORE_PRIO_BASE + self._submit_seq
+        self.redis.zadd(self._pending_key, {task_id: score})
 
         self._logger.info(f"Task submitted: {task_id} ({task_type}), priority={priority}")
         return task_id
@@ -183,19 +237,21 @@ class TaskQueue:
         Returns:
             List[WXTask]: 待执行任务列表，按优先级排序（高优先级在前）
         """
-        pending_raw = self.redis.lrange(self._pending_key, 0, -1) or []
-        if not isinstance(pending_raw, list):
-            pending_raw = []
+        pending_ids = self.redis.zrange(self._pending_key, 0, -1, withscores=True) or []
+        if not isinstance(pending_ids, list):
+            pending_ids = []
 
         tasks = []
-        for item in pending_raw:
-            task_id = item.get('task_id')
-            if task_id:
-                task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
-                if task_data and task_data.get('status') == 'pending':
-                    tasks.append(WXTask.from_dict(task_data))
+        for item in pending_ids:
+            task_id = item[0] if isinstance(item, tuple) else item
+            if isinstance(task_id, bytes):
+                task_id = task_id.decode('utf-8')
+            if not task_id:
+                continue
+            task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
+            if task_data and task_data.get('status') == 'pending':
+                tasks.append(WXTask.from_dict(task_data))
 
-        tasks.sort(key=lambda t: t.priority)
         return tasks
 
     def get_history(self, limit: int = 50) -> List[WXTask]:
@@ -240,12 +296,7 @@ class TaskQueue:
         task_data['end_time'] = datetime.now().isoformat()
         self.redis.set(f'{self._detail_prefix}{task_id}', task_data)
 
-        pending_raw = self.redis.lrange(self._pending_key, 0, -1) or []
-        if isinstance(pending_raw, list):
-            for item in pending_raw:
-                if item.get('task_id') == task_id:
-                    self.redis.lrem(self._pending_key, 1, item)
-                    break
+        self.redis.zrem(self._pending_key, task_id)
 
         self._logger.info(f"Task cancelled: {task_id}")
         return True
@@ -264,8 +315,8 @@ class TaskQueue:
             task.status = 'cancelled'
             task.end_time = datetime.now().isoformat()
             self.redis.set(f'{self._detail_prefix}{task.id}', task.to_dict())
+            self.redis.zrem(self._pending_key, task.id)
 
-        self.redis.delete(self._pending_key)
         self._logger.info(f"Queue cleared, {count} tasks cancelled")
         return count
 
@@ -283,26 +334,17 @@ class TaskQueue:
                 time.sleep(5)
 
     def _fetch_next_task(self) -> Optional[WXTask]:
-        """获取下一个待执行任务"""
-        pending_raw = self.redis.lrange(self._pending_key, 0, -1) or []
-        if not isinstance(pending_raw, list) or not pending_raw:
+        """获取下一个待执行任务（ZSET 取最低 score 一条，即最高优先级）"""
+        ids = self.redis.zrangebyscore(self._pending_key, 0, '+inf', start=0, num=1)
+        if not ids:
             return None
 
-        pending_with_tasks = []
-        for item in pending_raw:
-            task_id = item.get('task_id')
-            if task_id:
-                task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
-                if task_data and task_data.get('status') == 'pending':
-                    pending_with_tasks.append((item['priority'], task_data, item))
+        task_id = ids[0]
+        self.redis.zrem(self._pending_key, task_id)
 
-        if not pending_with_tasks:
+        task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
+        if not task_data or task_data.get('status') != 'pending':
             return None
-
-        pending_with_tasks.sort(key=lambda x: x[0])
-        task_data, original_item = pending_with_tasks[0][1], pending_with_tasks[0][2]
-
-        self.redis.lrem(self._pending_key, 1, original_item)
 
         return WXTask.from_dict(task_data)
 

@@ -11,7 +11,7 @@ from cozepy import Message, ChatEventType
 from cozepy import COZE_CN_BASE_URL
 from logger import log
 
-version = "V4.7.27"
+from core._version import version
 
 
 class OpenAIAPI:
@@ -312,7 +312,7 @@ class DifyAPI:
             payload["files"] = files
 
         try:
-            response = requests.post(url, headers=headers, json=payload)
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
             response.raise_for_status()
             if response_mode == "blocking":
                 return response.json()

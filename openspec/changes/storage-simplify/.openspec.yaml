@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-08-03
+goal: "目标: 降低每条消息处理成本, 多会话/高频场景不积压不重扫"
