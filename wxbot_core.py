@@ -559,6 +559,7 @@ _FORWARD_TABLE = {
         "_handle_custom_forward",
         "_is_custom_forward_source",
         "_parse_split_reply",
+        "message_handle_callback",
         "process_message",
         "wx_send_ai",
     ],
