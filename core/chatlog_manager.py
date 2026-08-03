@@ -528,7 +528,10 @@ class ChatlogManager:
                     msgs.sort(key=lambda m: m.get('seq', 0))
                     
                     # 过滤出 isSelf=False 且 seq > last_seq 的消息（他人发送的新消息），取最新的 UnreadCount 项
-                    new_messages = [m for m in msgs if not m.get('isSelf', False)][-UnreadCount:]
+                    new_messages = [
+                        m for m in msgs
+                        if not m.get('isSelf', False) and m.get('seq', 0) > last_seq
+                    ][-UnreadCount:]
                     
                     # 没有新消息则跳过
                     if not new_messages:
