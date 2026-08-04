@@ -27,6 +27,10 @@ class WXTask:
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     callback: Optional[Callable] = None
+    retry_count: int = 0
+    max_retries: Optional[int] = None
+    next_retry_at: Optional[float] = None
+    dead_at: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -40,6 +44,10 @@ class WXTask:
             'create_time': self.create_time,
             'start_time': self.start_time,
             'end_time': self.end_time,
+            'retry_count': self.retry_count,
+            'max_retries': self.max_retries,
+            'next_retry_at': self.next_retry_at,
+            'dead_at': self.dead_at,
         }
         if result['result'] is not None:
             if hasattr(result['result'], 'to_dict'):
@@ -58,7 +66,7 @@ class WXTask:
 
 
 class TaskQueue:
-    TASK_TYPES = ['send_msg', 'send_moments', 'like_moments', 'pass_friend', 'send_file']
+    TASK_TYPES = ['send_msg', 'send_moments', 'like_moments', 'pass_friend', 'send_file', 'ai_reply', 'ai_pregenerate']
 
     def __init__(self, bot):
         self.bot = bot
@@ -74,6 +82,14 @@ class TaskQueue:
         self._detail_prefix = f'wxbot:{self.wx_id}:tasks:'
         self._history_key = f'wxbot:{self.wx_id}:tasks:history'
         self._current_key = f'wxbot:{self.wx_id}:tasks:current'
+        self._delayed_key = f'wxbot:{self.wx_id}:tasks:delayed'
+        self._dead_key = f'wxbot:{self.wx_id}:tasks:dead'
+
+        # 重试配置（来自 config_manager，热重载）
+        self._max_retries = 3
+        self._retry_interval = 30
+        self._retry_factor = 2
+        self._reload_retry_config()
 
         # 提交序号（同一进程内单调递增），用于 ZSET score 唯一化实现同优先级 FIFO
         self._submit_seq = 0
@@ -84,10 +100,32 @@ class TaskQueue:
             'like_moments': self._handle_like_moments,
             'pass_friend': self._handle_pass_friend,
             'send_file': self._handle_send_file,
+            'ai_reply': self._handle_ai_reply,
+            'ai_pregenerate': self._handle_ai_pregenerate,
         }
 
         self._migrate_pending_list_to_zset()
         self._start_worker()
+
+    def _reload_retry_config(self) -> None:
+        """从配置管理器加载重试参数（支持运行时热重载）"""
+        try:
+            cfg = getattr(self.bot, 'config_manager', None)
+            if cfg is None:
+                cfg = getattr(self.bot, 'config', None)
+            if cfg is not None:
+                self._max_retries = max(0, int(getattr(cfg, 'task_queue_max_retries', 3)))
+                self._retry_interval = max(1, int(getattr(cfg, 'task_queue_retry_interval', 30)))
+                self._retry_factor = max(1, float(getattr(cfg, 'task_queue_retry_factor', 2)))
+        except Exception as e:
+            self._logger.warning(f"Load retry config failed, use defaults: {e}")
+
+    def _enqueue_pending(self, task: WXTask) -> None:
+        """将任务按优先级+FIFO 序号写入 pending ZSET"""
+        with self._lock:
+            self._submit_seq += 1
+            score = task.priority * SCORE_PRIO_BASE + self._submit_seq
+        self.redis.zadd(self._pending_key, {task.id: score})
 
     def _migrate_pending_list_to_zset(self) -> None:
         """
@@ -192,10 +230,7 @@ class TaskQueue:
             with self._lock:
                 self._callbacks[task_id] = callback
 
-        with self._lock:
-            self._submit_seq += 1
-            score = priority * SCORE_PRIO_BASE + self._submit_seq
-        self.redis.zadd(self._pending_key, {task_id: score})
+        self._enqueue_pending(task)
 
         self._logger.info(f"Task submitted: {task_id} ({task_type}), priority={priority}")
         return task_id
@@ -215,14 +250,15 @@ class TaskQueue:
         success_count = 0
         fail_count = 0
         for task in history:
-            if task.get('status') == 'completed':
+            if task.status == 'completed':
                 success_count += 1
-            elif task.get('status') == 'failed':
+            elif task.status == 'failed':
                 fail_count += 1
 
         return {
             'pending_count': pending_count,
             'current_task': current_task.to_dict() if current_task else None,
+            'dead_count': self.get_dead_tasks_count(),
             'history_stats': {
                 'total': total_executed,
                 'success': success_count,
@@ -272,6 +308,8 @@ class TaskQueue:
 
         tasks = []
         for task_id, _ in history_raw:
+            if isinstance(task_id, bytes):
+                task_id = task_id.decode('utf-8')
             task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
             if task_data:
                 tasks.append(WXTask.from_dict(task_data))
@@ -324,6 +362,8 @@ class TaskQueue:
         """工作线程主循环，单线程串行执行任务"""
         while self._running:
             try:
+                self._reload_retry_config()
+                self._promote_due_delayed()
                 task = self._fetch_next_task()
                 if task:
                     self._execute_task(task)
@@ -349,7 +389,7 @@ class TaskQueue:
         return WXTask.from_dict(task_data)
 
     def _execute_task(self, task: WXTask) -> None:
-        """执行任务"""
+        """执行任务，失败时按配置重试，重试耗尽进入死信队列"""
         task.start_time = datetime.now().isoformat()
         task.status = 'running'
         self._update_task(task)
@@ -368,13 +408,33 @@ class TaskQueue:
             self._logger.info(f"Task completed: {task.id}")
         except Exception as e:
             task.error = str(e)
-            task.status = 'failed'
-            self._logger.error(f"Task failed: {task.id} - {e}")
+            task.retry_count += 1
+            max_retries = task.max_retries if task.max_retries is not None else self._max_retries
+            if max_retries > 0 and task.retry_count <= max_retries:
+                task.status = 'pending'
+                interval = self._retry_interval * (self._retry_factor ** (task.retry_count - 1))
+                task.next_retry_at = time.time() + interval
+                self._logger.info(
+                    f"Task failed, will retry {task.retry_count}/{max_retries} "
+                    f"in {interval}s: {task.id} - {e}"
+                )
+            else:
+                task.status = 'failed'
+                task.dead_at = time.time()
+                self._logger.error(f"Task failed permanently: {task.id} - {e}")
         finally:
             task.end_time = datetime.now().isoformat()
             self._update_task(task)
             self.redis.delete(self._current_key)
-            self._add_to_history(task)
+            if task.status == 'pending':
+                self._schedule_retry(task)
+            else:
+                self._add_to_history(task)
+                if task.status == 'failed':
+                    self._add_to_dead(task)
+
+        if task.status == 'pending':
+            return
 
         callback = None
         with self._lock:
@@ -386,6 +446,105 @@ class TaskQueue:
                 callback(success, task.result, task.params)
             except Exception as e:
                 self._logger.error(f"Callback error for task {task.id}: {e}")
+
+    def _schedule_retry(self, task: WXTask) -> None:
+        """将待重试任务放入延迟队列（ZSET score=下次执行时间戳）"""
+        self.redis.zadd(self._delayed_key, {task.id: task.next_retry_at or time.time()})
+
+    def _promote_due_delayed(self) -> None:
+        """将延迟队列中已到期的任务重新加入 pending 队列"""
+        now = time.time()
+        due_ids = self.redis.zrangebyscore(self._delayed_key, 0, now, start=0, num=50) or []
+        for task_id in due_ids:
+            if isinstance(task_id, bytes):
+                task_id = task_id.decode('utf-8')
+            self.redis.zrem(self._delayed_key, task_id)
+            task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
+            if not task_data or task_data.get('status') != 'pending':
+                continue
+            task_data['next_retry_at'] = None
+            self.redis.set(f'{self._detail_prefix}{task_id}', task_data)
+            self._enqueue_pending(WXTask.from_dict(task_data))
+            self._logger.info(f"Task retry due, re-enqueued: {task_id}")
+
+    def _add_to_dead(self, task: WXTask) -> None:
+        """将耗尽重试次数的失败任务加入死信队列"""
+        self.redis.zadd(self._dead_key, {task.id: task.dead_at or time.time()})
+
+    def get_dead_tasks(self, limit: int = 50) -> List[WXTask]:
+        """
+        获取死信队列任务（重试耗尽后进入，可从面板恢复或丢弃）
+
+        Args:
+            limit: 返回数量限制，默认50
+
+        Returns:
+            List[WXTask]: 死信任务列表，按进入时间倒序排列
+        """
+        dead_raw = self.redis.zrange(self._dead_key, 0, -1, withscores=True) or []
+        dead_raw = sorted(dead_raw, key=lambda x: x[1], reverse=True)
+        if limit > 0:
+            dead_raw = dead_raw[:limit]
+
+        tasks = []
+        for task_id, _ in dead_raw:
+            if isinstance(task_id, bytes):
+                task_id = task_id.decode('utf-8')
+            task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
+            if task_data and task_data.get('status') == 'failed':
+                tasks.append(WXTask.from_dict(task_data))
+        return tasks
+
+    def get_dead_tasks_count(self) -> int:
+        """获取死信队列中的任务数量"""
+        return int(self.redis.zcard(self._dead_key) or 0)
+
+    def recover_task(self, task_id: str) -> bool:
+        """
+        从死信队列恢复任务，重新提交到待执行队列（重试次数清零）
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            bool: 是否恢复成功
+        """
+        task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
+        if not task_data or task_data.get('status') != 'failed':
+            return False
+
+        task = WXTask.from_dict(task_data)
+        task.status = 'pending'
+        task.retry_count = 0
+        task.error = None
+        task.next_retry_at = None
+        task.dead_at = None
+        task.start_time = None
+        task.end_time = None
+        self._update_task(task)
+
+        self.redis.zrem(self._dead_key, task_id)
+        self._enqueue_pending(task)
+        self._logger.info(f"Task recovered from dead queue: {task_id}")
+        return True
+
+    def discard_task(self, task_id: str) -> bool:
+        """
+        从死信队列丢弃任务（删除死信标记，保留历史记录）
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            bool: 是否丢弃成功
+        """
+        task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
+        if not task_data or task_data.get('status') != 'failed':
+            return False
+
+        self.redis.zrem(self._dead_key, task_id)
+        self._logger.info(f"Task discarded from dead queue: {task_id}")
+        return True
 
     def _update_task(self, task: WXTask) -> None:
         """更新任务详情"""
@@ -401,18 +560,50 @@ class TaskQueue:
         task_id = self.redis.get(self._current_key)
         if not task_id:
             return None
+        if isinstance(task_id, bytes):
+            task_id = task_id.decode('utf-8')
         task_data = self.redis.get(f'{self._detail_prefix}{task_id}')
         if task_data:
             return WXTask.from_dict(task_data)
         return None
 
+    @staticmethod
+    def _result_is_success(result) -> bool:
+        """判断界面操作结果是否成功。兼容 wxautox4 的 WxResponse(dict, status 成功/失败/错误) 与布尔/历史 dict 格式。"""
+        if result is True:
+            return True
+        if result is False or result is None:
+            return False
+        if isinstance(result, dict):
+            status = str(result.get("status", "")).strip()
+            if status in ("成功", "success", "ok", "true", "已完成"):
+                return True
+            if status in ("失败", "错误", "error", "fail", "failed", "false"):
+                return False
+            # 兼容旧格式 {"code": 0} 成功 / {"success": bool}
+            if result.get("code") == 0:
+                return True
+            if result.get("success") is True:
+                return True
+            if result.get("success") is False:
+                return False
+            # WxResponse.__bool__ 已按 status==成功 判定
+            try:
+                return bool(result)
+            except Exception:
+                return True
+        return bool(result)
+
     def _handle_send_msg(self, params: Dict[str, Any]) -> Any:
-        """处理发送消息任务"""
+        """处理发送消息任务；SendMsg 返回失败时抛异常（触发重试 → 死信队列）"""
         who = params.get('who')
         msg = params.get('msg')
         if not who or not msg:
             raise ValueError("send_msg requires 'who' and 'msg' params")
-        return self.bot.wx.SendMsg(who=who, msg=msg)
+        result = self.bot.wx.SendMsg(who=who, msg=msg)
+        if not self._result_is_success(result):
+            raise RuntimeError(f"send_msg failed ({who}): {result}")
+        return result
 
     def _handle_send_moments(self, params: Dict[str, Any]) -> Any:
         """处理发送朋友圈任务"""
@@ -420,7 +611,59 @@ class TaskQueue:
         images = params.get('images', [])
         privacy = params.get('privacy', 'public')
         tags = params.get('tags', [])
+        if not self._wait_mouse_idle():
+            return {"status": "失败", "message": "等待鼠标空闲超时，用户仍在操作，已放弃本次发布"}
+        try:
+            self.bot.wx.Show()
+        except Exception:
+            pass
         return self.bot.wx.SendMoments(text=text, images=images, privacy=privacy, tags=tags)
+
+    def _wait_mouse_idle(self, max_wait: Optional[float] = None) -> bool:
+        """
+        发布朋友圈前等待鼠标空闲，避免与真人鼠标操作争抢。
+
+        开启开关时：持续采样鼠标位置，若鼠标在某位置停留 >= idle 秒则视为空闲；
+        期间鼠标一旦移动则重置计时；超过 max_wait 秒仍未空闲则放弃等待（返回 False）。
+
+        Returns:
+            bool: True=鼠标已空闲可执行操作；False=等待超时（调用方仍可继续，但建议放弃）
+        """
+        cfg = getattr(self.bot, 'config_manager', None)
+        if cfg is None:
+            cfg = getattr(self.bot, 'config', None)
+        enabled = bool(getattr(cfg, 'moments_wait_mouse_idle_switch', True))
+        idle_need = float(getattr(cfg, 'moments_mouse_idle_seconds', 2))
+        if max_wait is None:
+            max_wait = float(getattr(cfg, 'moments_mouse_max_wait_seconds', 60))
+        if not enabled or max_wait <= 0:
+            return True
+
+        try:
+            from wxautox4 import uia
+            get_pos = uia.GetCursorPos
+        except Exception:
+            return True
+
+        start = time.time()
+        last_x, last_y = get_pos()
+        last_move = start
+        while time.time() - start < max_wait:
+            try:
+                x, y = get_pos()
+            except Exception:
+                break
+            if (x, y) != (last_x, last_y):
+                last_x, last_y = x, y
+                last_move = time.time()
+            if time.time() - last_move >= idle_need:
+                self._logger.info("鼠标已空闲 %.1fs，开始发布朋友圈", time.time() - last_move)
+                return True
+            time.sleep(0.05)
+        self._logger.warning(
+            "等待鼠标空闲超时（%.0fs），用户可能仍在操作，放弃本次自动发布", max_wait
+        )
+        return False
 
     def _handle_like_moments(self, params: Dict[str, Any]) -> Any:
         """处理点赞朋友圈任务"""
@@ -450,3 +693,17 @@ class TaskQueue:
         if not who or not filepath:
             raise ValueError("send_file requires 'who' and 'filepath' params")
         return self.bot.wx.SendFiles(who=who, filepath=filepath)
+
+    def _handle_ai_reply(self, params: Dict[str, Any]) -> Any:
+        """
+        处理 AI 回复任务（生成 + 发送）。
+        AI 接口失败抛 AIReplyError → 任务重试 → 重试耗尽 → 死信队列。
+        """
+        return self.bot.message_handler.ai_reply_task(params)
+
+    def _handle_ai_pregenerate(self, params: Dict[str, Any]) -> Any:
+        """
+        处理 AI 预生成任务（只生成回复写入待确认记录，不发送）。
+        AI 接口失败抛 AIReplyError → 任务重试 → 重试耗尽 → 死信队列（面板可人工恢复）。
+        """
+        return self.bot.message_handler.ai_pregenerate_task(params)

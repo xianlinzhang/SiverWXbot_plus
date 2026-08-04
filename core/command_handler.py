@@ -740,7 +740,7 @@ class CommandHandler:
         return chat.SendMsg('\n'.join(lines))
 
     def handle_confirm_reply(self, chat, message):
-        """处理 /确认回复 ID 指令：确认并发送指定待确认回复"""
+        """处理 /确认回复 ID 指令：确认并触发发送指定待确认回复"""
         if not self.message_store:
             return chat.SendMsg("消息存储功能未初始化")
         
@@ -748,11 +748,14 @@ class CommandHandler:
         if not msg_id:
             return chat.SendMsg("请提供消息ID，如：/确认回复 abc123")
         
-        result = self.message_store.confirm_reply(msg_id)
-        if result:
-            return chat.SendMsg(f"已确认并发送消息 {msg_id} 的回复")
-        else:
+        record = self.message_store._find_pending_by_id(msg_id)
+        if not record:
             return chat.SendMsg(f"未找到消息 {msg_id} 或该消息无需确认")
+        if hasattr(self.bot, 'message_handler') and hasattr(self.bot.message_handler, 'confirm_and_send'):
+            self.bot.message_handler.confirm_and_send(record.chat_name, msg_id)
+        else:
+            self.message_store.confirm_message(record.chat_name, msg_id)
+        return chat.SendMsg(f"已确认并发送消息 {msg_id} 的回复")
 
     def handle_cancel_reply(self, chat, message):
         """处理 /取消回复 ID 指令：取消指定待确认回复"""

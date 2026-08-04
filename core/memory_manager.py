@@ -260,10 +260,10 @@ class ReplyCountStore:
         if result is False or result is None:
             return False
         if isinstance(result, dict):
-            status = str(result.get("status", "")).lower()
-            if status in ("success", "ok", "true"):
+            status = str(result.get("status", "")).strip()
+            if status in ("成功", "success", "ok", "true", "已完成"):
                 return True
-            if status in ("error", "fail", "failed", "false"):
+            if status in ("失败", "错误", "error", "fail", "failed", "false"):
                 return False
             if result.get("code") == 0:
                 return True

@@ -106,6 +106,9 @@ def dashboard(**kwargs):
         ("scheduled_moments_list", []), ("moments_like_switch", False),
         ("moments_like_min", 60), ("moments_like_max", 120),
         ("random_moments_switch", False), ("random_moments_list", []),
+        ("moments_wait_mouse_idle_switch", True),
+        ("moments_mouse_idle_seconds", 2),
+        ("moments_mouse_max_wait_seconds", 60),
     ]:
         config.setdefault(_k, _v)
 
@@ -195,7 +198,16 @@ def dashboard(**kwargs):
         ("group_split_max_count", 4), ("chatlog_listen_switch", False),
         ("chatlog_url", "http://127.0.0.1:5030"), ("chatlog_polling_interval", 2),
         ("chatlog_request_timeout", 5), ("chatlog_context_switch", False),
-        ("chatlog_context_count", 50), ("chatlog_reply_delay", 60),
+        ("chatlog_context_count", 50),         ("chatlog_reply_delay", 60),
+        ("ai_request_timeout", 120),
+        ("deal_queue_consumer_switch", False),
+        ("deal_queue_redis_host", "122.51.49.63"), ("deal_queue_redis_port", 6379),
+        ("deal_queue_redis_db", 0), ("deal_queue_redis_password", ""),
+        ("deal_queue_poll_interval", 5), ("deal_queue_privacy", "public"),
+        ("deal_queue_moments_prefix", ""), ("deal_queue_moments_max_len", 2000),
+        ("deal_queue_pending_max", 500),
+        ("deal_queue_auto_approve_switch", False), ("deal_queue_auto_approve_delay", 60),
+        ("deal_queue_publish_interval_min", 300), ("deal_queue_publish_interval_max", 600),
     ]:
         config.setdefault(_k, _v)
 

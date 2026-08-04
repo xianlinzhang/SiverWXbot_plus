@@ -20,7 +20,7 @@ def get_messages():
             "code": 0,
             "message": "success",
             "data": {
-                "pending_confirm": pending,
+                "pending_confirm": [m.to_dict() for m in pending],
                 "pending_count": stats.get("pending_confirm", 0),
                 "processed_count": stats.get("processed", 0),
                 "replied_count": stats.get("replied", 0),
@@ -61,7 +61,8 @@ def confirm_message():
         message_id = data.get("message_id")
         if not chat_name or not message_id:
             return jsonify({"code": 400, "message": "chat_name 和 message_id 参数不能为空", "data": None}), 400
-        record = ws.bot.message_store.confirm_message(chat_name, message_id)
+        custom_reply = data.get("reply", "")
+        record = ws.bot.message_handler.confirm_and_send(chat_name, message_id, custom_reply=custom_reply)
         if record:
             return jsonify({"code": 0, "message": "消息确认成功", "data": record.to_dict()})
         return jsonify({"code": 404, "message": "消息不存在", "data": None}), 404
@@ -84,7 +85,7 @@ def reject_message():
         message_id = data.get("message_id")
         if not chat_name or not message_id:
             return jsonify({"code": 400, "message": "chat_name 和 message_id 参数不能为空", "data": None}), 400
-        record = ws.bot.message_store.reject_message(chat_name, message_id)
+        record = ws.bot.message_handler.reject_and_ignore(chat_name, message_id)
         if record:
             return jsonify({"code": 0, "message": "消息已拒绝", "data": record.to_dict()})
         return jsonify({"code": 404, "message": "消息不存在", "data": None}), 404

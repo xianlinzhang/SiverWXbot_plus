@@ -9,6 +9,10 @@ from logger import log
 from core.utils import SPLIT_SEPARATOR, SPLIT_PROMPT_TEMPLATE, clean_ai_reply_text
 
 
+class AIReplyError(Exception):
+    """AI 接口调用失败异常。由任务队列捕获后进入重试 → 死信队列。"""
+
+
 class MessageHandler:
     """
     消息处理模块
@@ -66,14 +70,14 @@ class MessageHandler:
         return parts[:max_count] if parts else [reply]
 
     def _clean_reply_for_send(self, reply):
-        """按配置清洗即将发送给用户的 AI 回复。"""
+        """按配置清洗即将发送给用户的 AI 回复。清洗后为空返回空字符串（不兜底固定回复）。"""
         if not self.config.clean_ai_reply_switch:
             return reply
         cleaned = clean_ai_reply_text(reply)
         if cleaned:
             return cleaned
-        log(level="WARNING", message="AI 回复清洗后为空，已使用接口失败固定回复兜底")
-        return self.config.api_error_reply
+        log(level="WARNING", message="AI 回复清洗后为空")
+        return ""
 
     def _get_reply_count_key(self, chat, message=None):
         """获取回复计数器 key；当前 wxautox4 可用稳定字段有限，先集中使用 chat.who。"""
@@ -189,9 +193,32 @@ class MessageHandler:
             msg_id = message_record.id
 
         if self.config.chat_reply_confirm_switch and message_record:
+            # 关键字命中 → 预生成关键字回复，放入待确认队列，不直接操作 UI
+            _kw = self._match_keyword(message.content) if self.config.chat_keyword_switch else None
+            if _kw:
+                self.message_store.add_pending_confirm(
+                    message_record,
+                    pending_reply=_kw,
+                    pending_source='keyword',
+                )
+                log(message=f"Chatlog 私聊 {chat_name} 关键字命中，回复已预生成，进入待确认队列")
+                return True
+
+            # 只监听不 AI 回复：直接标记完成，不进待确认
+            if self.config.chat_listen_only:
+                log(message=f"Chatlog 私聊 {chat_name} 已启用只监听不AI回复，跳过 AI 调用")
+                if message_record.id:
+                    self.message_store.set_message_status(chat_name, message_record.id, "processed")
+                return True
+
+            # 先入待确认队列，AI 预生成异步回填（任务队列，失败重试 → 死信）
             self.message_store.add_pending_confirm(message_record)
-            log(message=f"Chatlog 私聊 {chat_name} 消息已加入待确认队列，需人工确认后才会回复")
-            return True
+            log(message=f"Chatlog 私聊 {chat_name} 消息已加入待确认队列，AI 回复预生成中")
+            return self.submit_ai_pregenerate_task(
+                chat_name=chat_name,
+                message=message,
+                msg_id=message_record.id,
+            )
 
         # 关键字应答：无需调 AI，派发线程（主线程）直接处理
         if self.config.chat_keyword_switch:
@@ -215,17 +242,13 @@ class MessageHandler:
                 self.message_store.set_message_status(chat_name, msg_id, "processed")
             return True
 
-        # 真正需要调 AI 的生成部分 → AIWorker，主线程不触碰 AI 网络调用
-        self.bot.enqueue_ai(
-            lambda: self._ai_generate_and_send(
-                chat_name=chat_name,
-                message=message,
-                msg_id=msg_id,
-                is_group=False,
-            ),
-            context=f"Chatlog_chat:{chat_name}",
+        # 真正需要调 AI 的生成部分 → 任务队列 ai_reply 任务（失败重试 → 死信）
+        return self.submit_ai_reply_task(
+            chat_name=chat_name,
+            message=message,
+            msg_id=msg_id,
+            user_key=chat_name,
         )
-        return True
 
     def _match_keyword(self, content):
         """在 keyword_dict 中匹配关键词，命中返回回复内容，否则返回 None"""
@@ -236,13 +259,16 @@ class MessageHandler:
                 return self.config.keyword_dict[keyword]
         return None
 
-    def _ai_generate_and_send(self, chat_name, message, msg_id, is_group=False, user_key=None, api_error_once=False, max_round_switch=False):
+    def _generate_ai_reply(self, chat_name, message):
         """
-        在 AIWorker 线程内执行 AI 生成 + 分段发送提交（私聊路径）。
-        不触碰 wxautox UI 生成；发送仍通过 task_queue 异步。
+        生成 AI 回复（仅生成，不发送）。
+        在 AIWorker 线程内执行。
+
+        :param chat_name: 会话名称
+        :param message: 消息对象
+        :return: reply 字符串
+        :raises AIReplyError: AI 接口调用失败（由任务队列重试 → 死信）
         """
-        api_error_reply = False
-        api_error_should_mark = False
         reply = None
         try:
             history = []
@@ -269,7 +295,8 @@ class MessageHandler:
                         "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                         prompt=_effective_prompt,
                         history=history,
-                        image_path=message.content
+                        image_path=message.content,
+                        user_key=chat_name
                     )
                 elif '+引用的图片:' in message.content:
                     text_part, img_path = message.content.split('+引用的图片:', 1)
@@ -278,35 +305,204 @@ class MessageHandler:
                         text_part.strip() or "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                         prompt=_effective_prompt,
                         history=history,
-                        image_path=img_path.strip()
+                        image_path=img_path.strip(),
+                        user_key=chat_name
                     )
                 else:
-                    reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
+                    reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history, user_key=chat_name)
                     log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
             else:
-                reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history)
+                reply = self._get_chat_api(chat_name).chat(message.content, prompt=_effective_prompt, history=history, user_key=chat_name)
                 log(level="DEBUG", message=f"AI原始返回 [{chat_name}]: {reply[:300]}")
         except Exception as e:
             log(level="ERROR", message=str(e) + "\nAPI返回错误，请稍后再试")
-            api_error_reply = True
-            reply = self.config.api_error_reply
+            raise AIReplyError(f"AI 接口调用失败 [{chat_name}]: {e}") from e
 
-        if reply == "API返回错误，请稍后再试":
-            reply = self.config.api_error_reply
-            api_error_reply = True
-        else:
-            reply = self._clean_reply_for_send(reply)
+        if not reply or reply == "API返回错误，请稍后再试":
+            raise AIReplyError(f"AI 接口返回错误，无有效回复 [{chat_name}]")
 
+        reply = self._clean_reply_for_send(reply)
+        if not reply:
+            raise AIReplyError(f"AI 回复清洗后为空 [{chat_name}]")
+
+        return reply
+
+    def _ai_generate_and_send(self, chat_name, message, msg_id, is_group=False, user_key=None, api_error_once=False, max_round_switch=False):
+        """
+        在任务队列 worker 内执行 AI 生成 + 分段发送（私聊路径）。
+        AI 接口失败时抛 AIReplyError → 任务重试 → 死信队列，不再发固定回复。
+
+        :raises AIReplyError: AI 接口调用失败
+        """
+        reply = self._generate_ai_reply(chat_name, message)
         self._send_reply_segments(
             chat_name=chat_name,
             reply=reply,
             msg_id=msg_id,
-            api_error_reply=api_error_reply,
-            api_error_should_mark=api_error_should_mark,
+            api_error_reply=False,
+            api_error_should_mark=False,
             user_key=user_key or chat_name,
             api_error_once=api_error_once,
             max_round_switch=max_round_switch,
         )
+
+    @staticmethod
+    def _message_to_params(chat_name, message, msg_id, user_key=None, api_error_once=False, max_round_switch=False):
+        """将消息对象序列化为可提交任务的参数字典"""
+        return {
+            'chat_name': chat_name,
+            'msg_id': msg_id,
+            'user_key': user_key or chat_name,
+            'api_error_once': bool(api_error_once),
+            'max_round_switch': bool(max_round_switch),
+            'message': {
+                'content': getattr(message, 'content', ''),
+                'type': getattr(message, 'type', 'text'),
+                'attr': getattr(message, 'attr', 'friend'),
+                'sender': getattr(message, 'sender', ''),
+                'seq': getattr(message, 'seq', 0),
+                'time': getattr(message, 'time', ''),
+            },
+        }
+
+    def submit_ai_reply_task(self, chat_name, message, msg_id, user_key=None, api_error_once=False, max_round_switch=False) -> bool:
+        """提交 AI 回复任务到任务队列（失败会重试 → 死信）。"""
+        params = self._message_to_params(
+            chat_name, message, msg_id, user_key,
+            api_error_once=api_error_once, max_round_switch=max_round_switch,
+        )
+        self.bot.task_queue.submit(task_type='ai_reply', params=params)
+        return True
+
+    def ai_reply_task(self, params):
+        """
+        任务队列 ai_reply 任务的执行体（在 task_queue worker 线程内执行）。
+        AI 接口失败时抛 AIReplyError → 任务重试 → 死信队列。
+        """
+        from types import SimpleNamespace
+        chat_name = params.get('chat_name')
+        msg_id = params.get('msg_id')
+        message = SimpleNamespace(**params.get('message', {}))
+        reply = self._generate_ai_reply(chat_name, message)
+        self._send_reply_segments(
+            chat_name=chat_name,
+            reply=reply,
+            msg_id=msg_id,
+            api_error_reply=False,
+            api_error_should_mark=False,
+            user_key=params.get('user_key') or chat_name,
+            api_error_once=params.get('api_error_once', False),
+            max_round_switch=params.get('max_round_switch', False),
+        )
+        return True
+
+    def submit_ai_pregenerate_task(self, chat_name, message, msg_id) -> bool:
+        """提交 AI 预生成任务到任务队列（失败重试 → 死信）。"""
+        params = self._message_to_params(
+            chat_name, message, msg_id, user_key=chat_name,
+        )
+        self.bot.task_queue.submit(task_type='ai_pregenerate', params=params)
+        return True
+
+    def ai_pregenerate_task(self, params):
+        """
+        任务队列 ai_pregenerate 任务的执行体（在 task_queue worker 线程内执行）。
+        只生成回复回写待确认记录，不发送；AI 失败抛 AIReplyError → 重试 → 死信队列。
+        """
+        from types import SimpleNamespace
+        chat_name = params.get('chat_name')
+        msg_id = params.get('msg_id')
+        message = SimpleNamespace(**params.get('message', {}))
+        try:
+            reply = self._generate_ai_reply(chat_name, message)
+            source = 'ai'
+        except AIReplyError as e:
+            log(level="ERROR", message=f"待确认消息 {msg_id} AI 预生成失败：{e}")
+            raise
+        if not self.message_store:
+            log(level="WARNING", message=f"待确认预生成失败：message_store 不可用 [{chat_name}]")
+            return False
+        self.message_store.update_pending_confirm_reply(msg_id, reply, source)
+        return True
+
+    def confirm_and_send(self, chat_name, message_id, custom_reply=None):
+        """
+        确认待确认消息并发送回复。
+
+        发送内容优先级：
+        1. custom_reply（面板/命令手动修改后的内容，非空时优先）
+        2. 待确认记录中已预生成的回复（keyword/ai 来源）
+        3. 均无（如 AI 仍排队）→ 即时补生成
+
+        :param chat_name:  会话名称
+        :param message_id: 消息 ID
+        :param custom_reply: 手动修改后的回复内容（可选）
+        :return: MessageRecord 对象或 None
+        """
+        from types import SimpleNamespace
+        if not self.message_store:
+            return None
+        record = self.message_store.get_message(chat_name, message_id)
+        if not record:
+            return None
+        final_reply = (custom_reply or "").strip() if custom_reply else ""
+        if final_reply and record.pending_reply != final_reply:
+            self.message_store.update_pending_confirm_reply(
+                message_id, final_reply, record.pending_source or 'manual'
+            )
+        record = self.message_store.confirm_message(chat_name, message_id)
+        if not record:
+            return None
+        if final_reply:
+            self._send_reply_segments(
+                chat_name=chat_name,
+                reply=final_reply,
+                msg_id=record.id,
+                api_error_reply=False,
+                api_error_should_mark=False,
+                user_key=chat_name,
+                api_error_once=self.config.api_error_reply_once,
+                max_round_switch=self.config.chat_max_round_switch,
+            )
+            log(message=f"已确认消息 {message_id}，发送手动修改后的回复")
+            return record
+        if record.pending_reply:
+            self._send_reply_segments(
+                chat_name=chat_name,
+                reply=record.pending_reply,
+                msg_id=record.id,
+                api_error_reply=False,
+                api_error_should_mark=False,
+                user_key=chat_name,
+                api_error_once=self.config.api_error_reply_once,
+                max_round_switch=self.config.chat_max_round_switch,
+            )
+            log(message=f"已确认消息 {message_id}，发送预生成回复")
+            return record
+        proxy = SimpleNamespace(
+            content=record.content,
+            type=record.msg_type,
+            sender=record.sender,
+        )
+        self.submit_ai_reply_task(
+            chat_name=chat_name,
+            message=proxy,
+            msg_id=record.id,
+            user_key=chat_name,
+            api_error_once=self.config.api_error_reply_once,
+            max_round_switch=self.config.chat_max_round_switch,
+        )
+        log(message=f"已确认消息 {message_id}，AI 回复已进入任务队列")
+        return record
+
+    def reject_and_ignore(self, chat_name, message_id):
+        """拒绝待确认消息（不回复）。"""
+        if not self.message_store:
+            return None
+        record = self.message_store.reject_message(chat_name, message_id)
+        if record:
+            log(message=f"已拒绝消息 {message_id}，不回复")
+        return record
 
     def _send_reply_segments(self, chat_name, reply, msg_id, api_error_reply, api_error_should_mark, user_key, api_error_once=False, max_round_switch=False):
         """清洗、拆分、分片经 task_queue 发送（可在 AIWorker 线程内执行），并按需回写存储。"""
@@ -415,7 +611,8 @@ class MessageHandler:
                         f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                         prompt=_effective_group_prompt,
                         history=history,
-                        image_path=message.content
+                        image_path=message.content,
+                        user_key=chat.who
                     )
                 elif '+引用的图片:' in content_without_at:
                     text_part, img_path = content_without_at.split('+引用的图片:', 1)
@@ -424,22 +621,22 @@ class MessageHandler:
                         f"{message.sender}: {text_part.strip()}" if text_part.strip() else f"{message.sender}: [这是 {message.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                         prompt=_effective_group_prompt,
                         history=history,
-                        image_path=img_path.strip()
+                        image_path=img_path.strip(),
+                        user_key=chat.who
                     )
                 else:
                     group_api = self._get_group_api(chat.who)
-                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history, user_key=chat.who)
             else:
                 group_api = self._get_group_api(chat.who)
-                reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history, user_key=chat.who)
         except Exception as e:
             log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
-            reply = "API返回错误，请稍后再试"
+            return
 
-        if reply == "API返回错误，请稍后再试":
-            reply = self.config.api_error_reply
-        else:
-            reply = self._clean_reply_for_send(reply)
+        reply = self._clean_reply_for_send(reply)
+        if not reply:
+            return
 
         if self.config.group_split_reply_switch:
             parts = self._parse_split_reply(reply, self.config.group_split_max_count)
@@ -716,9 +913,32 @@ class MessageHandler:
             msg_id = message_record.id
 
         if self.config.chat_reply_confirm_switch and message_record:
+            # 关键字命中 → 预生成关键字回复，放入待确认队列，不直接操作 UI
+            _kw = self._match_keyword(message.content) if self.config.chat_keyword_switch else None
+            if _kw:
+                self.message_store.add_pending_confirm(
+                    message_record,
+                    pending_reply=_kw,
+                    pending_source='keyword',
+                )
+                log(message=f"私聊 {chat.who} 关键字命中，回复已预生成，进入待确认队列")
+                return True
+
+            # 只监听不 AI 回复：直接标记完成，不进待确认
+            if self.config.chat_listen_only:
+                log(message=f"私聊 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
+                if message_record.id:
+                    self.message_store.set_message_status(chat.who, message_record.id, "processed")
+                return True
+
+            # 先入待确认队列，AI 预生成异步回填（任务队列，失败重试 → 死信）
             self.message_store.add_pending_confirm(message_record)
-            log(message=f"私聊 {chat.who} 消息已加入待确认队列，需人工确认后才会回复")
-            return True
+            log(message=f"私聊 {chat.who} 消息已加入待确认队列，AI 回复预生成中")
+            return self.submit_ai_pregenerate_task(
+                chat_name=chat.who,
+                message=message,
+                msg_id=message_record.id,
+            )
 
         api_error_should_mark = False
 
@@ -749,17 +969,12 @@ class MessageHandler:
                 self.message_store.set_message_status(chat.who, msg_id, "processed")
             return limit_result
 
-        # 真正需要调 AI 的生成部分 → AIWorker
-        self.bot.enqueue_ai(
-            lambda: self._ai_generate_and_send(
-                chat_name=chat.who,
-                message=message,
-                msg_id=msg_id,
-                is_group=False,
-                user_key=user_key,
-                api_error_once=self.config.api_error_reply_once,
-                max_round_switch=self.config.chat_max_round_switch,
-            ),
-            context=f"chat:{chat.who}",
+        # 真正需要调 AI 的生成部分 → 任务队列 ai_reply 任务（失败重试 → 死信）
+        return self.submit_ai_reply_task(
+            chat_name=chat.who,
+            message=message,
+            msg_id=msg_id,
+            user_key=user_key,
+            api_error_once=self.config.api_error_reply_once,
+            max_round_switch=self.config.chat_max_round_switch,
         )
-        return True

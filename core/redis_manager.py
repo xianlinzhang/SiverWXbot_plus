@@ -308,6 +308,18 @@ class RedisManager:
             elif method == 'hgetall':
                 name = args[0] if args else kwargs.get('name')
                 result = self._fallback_data.get(name, {})
+            elif method == 'hdel':
+                name = args[0] if args else kwargs.get('name')
+                keys = args[1:] if len(args) > 1 else kwargs.get('keys', ())
+                hash_data = self._fallback_data.get(name, {})
+                removed = 0
+                for key in keys:
+                    if key in hash_data:
+                        del hash_data[key]
+                        removed += 1
+                if removed:
+                    self._save_fallback_data()
+                result = removed
             elif method == 'zrangebyscore':
                 name = args[0] if len(args) > 0 else kwargs.get('name')
                 min = args[1] if len(args) > 1 else kwargs.get('min', '-inf')
@@ -651,6 +663,22 @@ class RedisManager:
             return result
 
         return self._execute_with_retry(_hgetall)
+
+    def hdel(self, name: str, *keys: str) -> int:
+        """
+        删除哈希表中的一个或多个字段
+
+        Args:
+            name: 哈希表名称
+            *keys: 要删除的字段名
+
+        Returns:
+            int: 被删除的字段数量
+        """
+        if not REDIS_AVAILABLE or not self._client:
+            return self._execute_fallback('hdel', name=name, keys=keys)
+
+        return self._execute_with_retry(self._client.hdel, name, *keys)
 
     def rpop(self, name: str) -> Optional[Any]:
         """

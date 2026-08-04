@@ -4,7 +4,7 @@ import json
 import uuid
 import hashlib
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
 from logger import log
 
@@ -28,6 +28,8 @@ class MessageRecord:
         self.needs_confirm = False         # 是否需要确认
         self.confirm_status = "pending"    # 确认状态：pending/confirmed/rejected
         self.unread = False                # 是否未读
+        self.pending_reply = ""            # 预生成的回复内容（待确认时已生成）
+        self.pending_source = ""           # 预生成来源：keyword/ai/ai_error/''（未预生成）
 
     def to_dict(self):
         """将消息记录转换为字典，用于持久化存储"""
@@ -47,6 +49,8 @@ class MessageRecord:
             "needs_confirm": self.needs_confirm,
             "confirm_status": self.confirm_status,
             "unread": self.unread,
+            "pending_reply": self.pending_reply,
+            "pending_source": self.pending_source,
         }
 
     @classmethod
@@ -68,6 +72,8 @@ class MessageRecord:
         record.needs_confirm = data.get("needs_confirm", False)
         record.confirm_status = data.get("confirm_status", "pending")
         record.unread = data.get("unread", False)
+        record.pending_reply = data.get("pending_reply", "")
+        record.pending_source = data.get("pending_source", "")
         return record
 
 
@@ -578,7 +584,8 @@ class MessageStore:
             mutable = {k: v for k, v in updates.items()
                        if k in ('status', 'unread', 'replied_content', 'confirm_status',
                                 'needs_confirm', 'processed_time',
-                                'reply_content', 'reply_time', 'reply_id')}
+                                'reply_content', 'reply_time', 'reply_id',
+                                'pending_reply', 'pending_source')}
             if mutable:
                 for k, v in mutable.items():
                     self._redis_manager.hset(detail_key, k, v)
@@ -941,20 +948,29 @@ class MessageStore:
                     return True
         return False
 
-    def add_pending_confirm(self, record):
+    def add_pending_confirm(self, record, pending_reply="", pending_source=""):
         """
-        添加待确认消息到队列
+        添加待确认消息到队列（支持预生成回复）
 
         :param record: MessageRecord 对象
+        :param pending_reply: 预生成的回复内容（keyword/ai 来源），确认后直接发送
+        :param pending_source: 预生成来源：keyword/ai/ai_error/''（未预生成）
         :return: 是否添加成功
         """
         with self._pending_lock:
             record.needs_confirm = True
             record.confirm_status = "pending"
             record.status = "pending"
+            record.pending_reply = pending_reply
+            record.pending_source = pending_source
 
             if self._is_redis_available():
                 if self._redis_add_pending_confirm(record):
+                    if pending_reply:
+                        self._redis_update_message(record.chat_name, record.id, {
+                            "pending_reply": pending_reply,
+                            "pending_source": pending_source,
+                        })
                     log(message=f"消息已加入待确认队列(Redis): {record.id}")
                     return True
 
@@ -966,6 +982,8 @@ class MessageStore:
                         messages[i]["needs_confirm"] = True
                         messages[i]["confirm_status"] = "pending"
                         messages[i]["status"] = "pending"
+                        messages[i]["pending_reply"] = pending_reply
+                        messages[i]["pending_source"] = pending_source
                         self._save_messages(path, messages)
                         break
 
@@ -990,6 +1008,44 @@ class MessageStore:
 
         with self._pending_lock:
             return list(getattr(self, '_pending_confirm', []))
+
+    def update_pending_confirm_reply(self, message_id, pending_reply, pending_source):
+        """
+        更新待确认消息的预生成回复（AI 异步生成完成后回写）。
+
+        :param message_id: 消息 ID
+        :param pending_reply: 生成的回复内容
+        :param pending_source: 来源（keyword/ai/ai_error）
+        :return: 是否更新成功
+        """
+        record = self._find_pending_by_id(message_id)
+        if not record:
+            return False
+
+        record.pending_reply = pending_reply
+        record.pending_source = pending_source
+
+        if self._is_redis_available():
+            detail_key = self._get_pending_confirm_detail_key(message_id)
+            self._redis_manager.hset(detail_key, 'pending_reply', pending_reply)
+            self._redis_manager.hset(detail_key, 'pending_source', pending_source)
+            self._redis_update_message(record.chat_name, message_id, {
+                "pending_reply": pending_reply,
+                "pending_source": pending_source,
+            })
+        else:
+            path = self._get_message_path(record.chat_name)
+            with self._get_lock(record.chat_name):
+                messages = self._load_messages(path)
+                for i, msg_data in enumerate(messages):
+                    if msg_data.get("id") == message_id:
+                        messages[i]["pending_reply"] = pending_reply
+                        messages[i]["pending_source"] = pending_source
+                        self._save_messages(path, messages)
+                        break
+
+        log(message=f"待确认消息 {message_id} 预生成回复已更新({pending_source})")
+        return True
 
     def confirm_message(self, chat_name, message_id):
         """
@@ -1069,6 +1125,38 @@ class MessageStore:
         log(message=f"消息已拒绝: {message_id}")
         return record
 
+    def _find_pending_by_id(self, message_id):
+        """在待确认队列中按消息 ID 查找记录（跨会话）"""
+        for record in self.get_pending_confirm():
+            if record.id == message_id:
+                return record
+        return None
+
+    def confirm_reply(self, message_id):
+        """
+        按消息 ID 确认回复（微信命令 / 面板统一入口）。
+        确认后消息状态为 confirmed，并返回记录供上层触发 AI 回复。
+
+        :param message_id: 消息 ID
+        :return: MessageRecord 对象或 None
+        """
+        record = self._find_pending_by_id(message_id)
+        if not record:
+            return None
+        return self.confirm_message(record.chat_name, message_id)
+
+    def cancel_reply(self, message_id):
+        """
+        按消息 ID 取消待确认回复（拒绝回复）。
+
+        :param message_id: 消息 ID
+        :return: MessageRecord 对象或 None
+        """
+        record = self._find_pending_by_id(message_id)
+        if not record:
+            return None
+        return self.reject_message(record.chat_name, message_id)
+
     def bind_reply(self, chat_name, message_id, reply_content, reply_time=None):
         """
         绑定消息与回复的对应关系
@@ -1145,21 +1233,35 @@ class MessageStore:
             return [m for m in messages if keyword in m.content]
         else:
             results = []
-            try:
-                base_dir = os.path.join(self.base_path, self.wx_id)
-                if os.path.exists(base_dir):
-                    for storage_dir in os.listdir(base_dir):
-                        storage_path = os.path.join(base_dir, storage_dir)
-                        if os.path.isdir(storage_path):
-                            msg_file = os.path.join(storage_path, f"{storage_dir}_messages.json")
-                            if os.path.exists(msg_file):
-                                messages = self._load_messages(msg_file)
-                                for msg_data in messages:
-                                    record = MessageRecord.from_dict(msg_data)
-                                    if keyword in record.content:
-                                        results.append(record)
-            except Exception as e:
-                log(level="ERROR", message=f"搜索消息失败: {e}")
+            if self._is_redis_available():
+                try:
+                    base_key = f"wxbot:{self.wx_id}:messages:"
+                    pending_key = f"{base_key}pending_confirm"
+                    for key in self._redis_manager.keys(f"{base_key}*"):
+                        if key == pending_key:
+                            continue
+                        messages = self._redis_manager.lrange(key, 0, -1)
+                        for msg_data in messages:
+                            if isinstance(msg_data, dict) and keyword in (msg_data.get('content') or ''):
+                                results.append(MessageRecord.from_dict(msg_data))
+                except Exception as e:
+                    log(level="ERROR", message=f"搜索消息失败(Redis): {e}")
+            else:
+                try:
+                    base_dir = os.path.join(self.base_path, self.wx_id)
+                    if os.path.exists(base_dir):
+                        for storage_dir in os.listdir(base_dir):
+                            storage_path = os.path.join(base_dir, storage_dir)
+                            if os.path.isdir(storage_path):
+                                msg_file = os.path.join(storage_path, f"{storage_dir}_messages.json")
+                                if os.path.exists(msg_file):
+                                    messages = self._load_messages(msg_file)
+                                    for msg_data in messages:
+                                        record = MessageRecord.from_dict(msg_data)
+                                        if keyword in record.content:
+                                            results.append(record)
+                except Exception as e:
+                    log(level="ERROR", message=f"搜索消息失败: {e}")
             return results
 
     def get_history(self, chat_name, count=None, wxid=None):
@@ -1178,6 +1280,7 @@ class MessageStore:
 
         if chatlog_history:
             chatlog_history.sort(key=self._get_message_sort_key)
+            self._enrich_history_flags(chat_name, chatlog_history, wxid)
             return chatlog_history
 
         messages = self.get_all_messages_with_fallback(chat_name, wxid, count)
@@ -1197,7 +1300,13 @@ class MessageStore:
                 "type": msg_type,
                 "attr": attr,
                 "sender": msg.sender,
-                "content": msg.content
+                "content": msg.content,
+                "seq": msg.seq,
+                "message_id": msg.id,
+                "unread": msg.unread,
+                "needs_confirm": msg.needs_confirm,
+                "confirm_status": msg.confirm_status,
+                "status": msg.status
             })
 
             if msg.reply_content:
@@ -1215,6 +1324,100 @@ class MessageStore:
         history.sort(key=self._get_message_sort_key)
 
         return history
+
+    def _enrich_history_flags(self, chat_name, history, wxid=None):
+        """
+        为 Chatlog 来源的历史消息补充存储层的业务标识（未读/待确认等），
+        通过 seq 与存储层 MessageRecord 匹配，使弹窗消息列表能显示未读与待操作角标。
+
+        :param chat_name: 会话名称
+        :param history: 历史消息列表（含 seq 字段）
+        :param wxid: 微信号（可选，用于补充查找）
+        """
+        try:
+            records = self.get_all_messages_with_fallback(chat_name, wxid)
+        except Exception:
+            records = []
+
+        by_seq = {}
+        for r in records:
+            if r.seq:
+                by_seq[str(r.seq)] = r
+
+        for entry in history:
+            seq = entry.get('seq')
+            record = by_seq.get(str(seq)) if seq else None
+            if record:
+                entry['message_id'] = record.id
+                entry['unread'] = record.unread
+                entry['needs_confirm'] = record.needs_confirm
+                entry['confirm_status'] = record.confirm_status
+                entry['status'] = record.status
+            else:
+                entry.setdefault('message_id', '')
+                entry.setdefault('unread', False)
+                entry.setdefault('needs_confirm', False)
+                entry.setdefault('confirm_status', '')
+                entry.setdefault('status', '')
+
+    def get_chat_action_stats(self):
+        """
+        统计每个会话的待操作消息数（未读 + 待确认）。
+
+        :return: dict，格式：{chat_name: {"unread": int, "pending": int}}
+                 仅包含存在未读或待确认消息的会话。
+        """
+        stats = {}
+        if self._is_redis_available():
+            try:
+                base_key = f"wxbot:{self.wx_id}:messages:"
+                all_keys = self._redis_manager.keys(f"{base_key}*")
+                for key in all_keys:
+                    chat_name = key[len(base_key):] if key.startswith(base_key) else key
+                    if not chat_name:
+                        continue
+                    messages = self._redis_manager.lrange(key, 0, -1)
+                    if not messages:
+                        continue
+                    unread = 0
+                    pending = 0
+                    for msg_data in messages:
+                        if not isinstance(msg_data, dict):
+                            continue
+                        msg_id = msg_data.get('id')
+                        if msg_id:
+                            detail = self._get_message_detail(msg_id)
+                            if detail:
+                                for k, v in detail.items():
+                                    msg_data[k] = v
+                        if msg_data.get('unread'):
+                            unread += 1
+                        if msg_data.get('needs_confirm') and msg_data.get('confirm_status') == 'pending':
+                            pending += 1
+                    if unread or pending:
+                        stats[chat_name] = {"unread": unread, "pending": pending}
+            except Exception as e:
+                log(level="WARNING", message=f"Redis 获取会话操作统计失败: {e}")
+        else:
+            try:
+                base_dir = os.path.join(self.base_path, self.wx_id)
+                if os.path.exists(base_dir):
+                    for storage_dir in os.listdir(base_dir):
+                        storage_path = os.path.join(base_dir, storage_dir)
+                        if os.path.isdir(storage_path):
+                            msg_file = os.path.join(storage_path, f"{storage_dir}_messages.json")
+                            if os.path.exists(msg_file):
+                                messages = self._load_messages(msg_file)
+                                unread = sum(1 for m in messages if m.get('unread'))
+                                pending = sum(
+                                    1 for m in messages
+                                    if m.get('needs_confirm') and m.get('confirm_status') == 'pending'
+                                )
+                                if unread or pending:
+                                    stats[storage_dir] = {"unread": unread, "pending": pending}
+            except Exception as e:
+                log(level="ERROR", message=f"文件获取会话操作统计失败: {e}")
+        return stats
 
     def _get_message_sort_key(self, msg):
         """
@@ -1251,6 +1454,16 @@ class MessageStore:
                     except ValueError:
                         continue
             except Exception:
+                pass
+            try:
+                iso_time = msg_time
+                if iso_time.endswith('Z'):
+                    iso_time = iso_time[:-1] + '+00:00'
+                parsed = datetime.fromisoformat(iso_time)
+                if parsed.tzinfo is not None:
+                    return parsed.timestamp() * 1000
+                return parsed.replace(tzinfo=timezone.utc).timestamp() * 1000
+            except ValueError:
                 pass
         return 0
 
@@ -1315,7 +1528,8 @@ class MessageStore:
                     "type": msg_type_str,
                     "attr": attr,
                     "sender": sender,
-                    "content": content
+                    "content": content,
+                    "seq": msg.get('seq', 0)
                 })
 
             log("DEBUG", f"[MessageStore] 从 Chatlog API 获取到 {len(history)} 条历史消息")
@@ -1346,17 +1560,21 @@ class MessageStore:
                 for key in all_keys:
                     if key == pending_key:
                         continue
-                    messages = self._redis_manager.get(key)
+                    messages = self._redis_manager.lrange(key, 0, -1)
                     if messages and isinstance(messages, list):
-                        for msg in messages:
-                            stats['total'] += 1
-                            status = msg.get('status', '')
-                            if status == 'processed':
-                                stats['processed'] += 1
-                            elif status == 'replied':
-                                stats['replied'] += 1
-                
-                pending_data = self._redis_manager.get(pending_key)
+                        stats['total'] += len(messages)
+
+                # 可变状态以 msg_status 为准（列表内 status 为保存时快照，不随 set_message_status 同步）
+                for key in self._redis_manager.keys(f"wxbot:{self.wx_id}:msg_status:*"):
+                    status = self._redis_manager.get(key)
+                    if isinstance(status, bytes):
+                        status = status.decode('utf-8')
+                    if status == 'processed':
+                        stats['processed'] += 1
+                    elif status == 'replied':
+                        stats['replied'] += 1
+
+                pending_data = self._redis_manager.lrange(pending_key, 0, -1)
                 if pending_data and isinstance(pending_data, list):
                     stats['pending_confirm'] = len(pending_data)
             except Exception as e:

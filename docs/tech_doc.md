@@ -168,11 +168,12 @@ config/
 | **自定义转发** | `custom_forward_switch`, `custom_forward_list` |
 | **多 Prompt** | `default_prompt`, `chat_prompt_map`, `group_prompt_map` |
 | **定时任务** | `scheduled_msg_switch`, `scheduled_moments_switch` |
+| **同城信息消费** | `deal_queue_consumer_switch`, `deal_queue_redis_host`, `deal_queue_poll_interval`, `deal_queue_pending_max`, `deal_queue_auto_approve_switch`, `deal_queue_auto_approve_delay`, `deal_queue_publish_interval_min`, `deal_queue_publish_interval_max` |
 | **对话记忆** | `memory_switch`, `memory_max_count`, `memory_context_count` |
 | **发送延迟** | `reply_delay_switch`, `reply_delay_min`, `reply_delay_max` |
 | **Chatlog** | `chatlog_listen_switch`, `chatlog_url`, `chatlog_polling_interval` |
 | **Redis** | `redis_enabled`, `redis_host`, `redis_port`, `redis_fallback` |
-| **任务队列** | `task_queue_enabled`, `task_queue_max_pending` |
+| **任务队列** | `task_queue_enabled`, `task_queue_max_pending`, `task_queue_max_retries` |
 
 **核心方法：**
 
@@ -455,6 +456,9 @@ def get_history_tasks(self, limit=50) -> List[Dict]:
 | `task_queue_enabled` | True | 是否启用任务队列 |
 | `task_queue_max_pending` | 1000 | 最大待执行任务数 |
 | `task_queue_history_limit` | 500 | 历史记录保留条数 |
+| `task_queue_max_retries` | 3 | 任务最大重试次数（0=不重试） |
+| `task_queue_retry_interval` | 30 | 首次重试间隔（秒） |
+| `task_queue_retry_factor` | 2 | 重试间隔递增倍数（指数退避） |
 
 ---
 

@@ -575,6 +575,9 @@ class _TempAPIConfig:
         self.base_url = str(cfg.get('url', '')).strip().rstrip('/')
         self.model1 = str(cfg.get('model', '')).strip()
         self.prompt = "你是接口连通性测试助手。请只回复 OK。"
+        self.app_type = str(cfg.get('app_type', 'chat')).strip() or 'chat'
+        self.workflow_input_key = str(cfg.get('workflow_input_key', 'query')).strip() or 'query'
+        self.workflow_output_key = str(cfg.get('workflow_output_key', 'text')).strip() or 'text'
 
 
 def _build_test_api_client(tmp_config):
@@ -895,6 +898,9 @@ def main():
                 "moments_like_max": 120,
                 "random_moments_switch": False,
                 "random_moments_list": [],
+                "moments_wait_mouse_idle_switch": True,
+                "moments_mouse_idle_seconds": 2,
+                "moments_mouse_max_wait_seconds": 60,
                 "everyday_start_stop_bot_switch": False,
                 "everyday_start_bot_time": "08:00",
                 "everyday_stop_bot_time": "23:00",

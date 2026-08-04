@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -764,6 +764,7 @@ body.mobile-nav-open { overflow: hidden; }
   <div class="nav-item"><a class="nav-link" data-tab="tab-forward"><i class="bi bi-share"></i> 自定义转发</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-schedule"><i class="bi bi-alarm"></i> 定时消息</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-moments"><i class="bi bi-image"></i> 朋友圈</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-deal"><i class="bi bi-megaphone"></i> 同城发布</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-startstop"><i class="bi bi-clock-history"></i> 定时启停</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-memory"><i class="bi bi-journal-text"></i> 记忆管理</a></div>
@@ -1167,6 +1168,33 @@ body.mobile-nav-open { overflow: hidden; }
               <label class="cfg-label">API Key</label>
               {% set _k = cfg.get('key', '') %}{% if _k|length > 10 %}{% set _km = _k[:5] + ('*' * (_k|length - 10)) + _k[-5:] %}{% else %}{% set _km = _k %}{% endif %}
               <input type="text" class="form-control api-key-input" value="{{ _km }}" data-real-key="{{ _k }}" data-masked="{{ _km }}" placeholder="sk-..." autocomplete="off">
+            </div>
+            <div class="dify-api-fields" style="display:none;">
+              <div class="col-12 col-md-3">
+                <label class="cfg-label">应用类型</label>
+                <select class="form-select api-app-type-select">
+                  <option value="chat" {% if cfg.get('app_type', 'chat') == 'chat' %}selected{% endif %}>Chat（聊天/会话）</option>
+                  <option value="workflow" {% if cfg.get('app_type', 'chat') == 'workflow' %}selected{% endif %}>Workflow（工作流）</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-6 api-workflow-only" style="display:none;">
+                <label class="cfg-label">入参变量</label>
+                <div class="api-workflow-input-rows">
+                  {% for _kv in (cfg.get('workflow_input_key', 'query') or '').split(',') if _kv.strip() %}
+                  {% set _kv_parts = _kv.split('=', 1) %}
+                  <div class="api-workflow-input-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+                    <input type="text" class="form-control api-workflow-input-key-field" value="{{ _kv_parts[0].strip() }}" placeholder="变量名">
+                    <input type="text" class="form-control api-workflow-input-value-field" value="{{ _kv_parts[1].strip() if _kv_parts|length > 1 else '' }}" placeholder="$message / $prompt / $model / $user_key / $history / $time / $date / 常量">
+                    <button type="button" class="btn-rm-row" title="删除该入参" style="flex:0 0 28px;height:32px;border:1px solid var(--border);background:transparent;border-radius:4px;color:var(--muted);cursor:pointer;"><i class="bi bi-x"></i></button>
+                  </div>
+                  {% endfor %}
+                </div>
+                <button type="button" class="btn-add-workflow-input" style="border:1px dashed var(--border);background:transparent;color:var(--muted);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;width:100%;"><i class="bi bi-plus"></i> 添加入参变量</button>
+              </div>
+              <div class="col-12 col-md-3 api-workflow-only" style="display:none;">
+                <label class="cfg-label">输出变量名</label>
+                <input type="text" class="form-control api-workflow-output-key-input" value="{{ cfg.get('workflow_output_key', 'text') }}" placeholder="text">
+              </div>
             </div>
           </div>
         </div>
@@ -2121,6 +2149,161 @@ body.mobile-nav-open { overflow: hidden; }
     </div>
   </div>
 
+  <!-- ===== Tab: Deal ===== -->
+  <div class="config-panel" id="tab-deal">
+    <!-- 同城信息消费配置 -->
+    <div class="cfg-card" style="margin-bottom:20px;">
+      <div class="cfg-card-header"><i class="bi bi-megaphone"></i><h5>同城信息消费</h5><span class="desc">消费 we-mp-rss 推送的顺风车/招聘队列，人工确认后发布朋友圈</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#eefbf3;border:1px solid #b7e7c8;border-radius:6px;color:#116a3d;font-size:12.5px;line-height:1.9;">
+        <i class="bi bi-info-circle" style="color:#18a058;"></i>
+        <strong>功能说明：</strong>开启后机器人按间隔轮询远程 Redis 队列 <code>wemp:deal:push:queue</code>，把顺风车/招聘消息渲染为纯文本文案放入本机待发布池。<br>
+        在下方「待发布列表」人工确认后再发布；仅在朋友圈真正发出后才会向生产者回报 <code>PUBLISHED</code> 回执。<br>
+        <strong>⚠️ 注意：</strong>远程 Redis 连接不可用时只记日志重试，不影响机器人其他功能；发布动作需先启动机器人。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="deal_queue_consumer_switch" name="deal_queue_consumer_switch" {% if config.deal_queue_consumer_switch %}checked{% endif %}>
+        <label for="deal_queue_consumer_switch">启用同城信息消费</label>
+        <span class="switch-desc">默认关闭，开启后机器人运行时自动轮询远程队列</span>
+      </div>
+      <div class="row mt-3">
+        <div class="col-4 mb-2">
+          <label class="cfg-label" for="deal_queue_redis_host">远程 Redis 主机</label>
+          <input type="text" class="form-control" id="deal_queue_redis_host" value="{{ config.deal_queue_redis_host }}">
+        </div>
+        <div class="col-2 mb-2">
+          <label class="cfg-label" for="deal_queue_redis_port">端口</label>
+          <input type="number" class="form-control" id="deal_queue_redis_port" min="1" max="65535" value="{{ config.deal_queue_redis_port }}">
+        </div>
+        <div class="col-2 mb-2">
+          <label class="cfg-label" for="deal_queue_redis_db">库号</label>
+          <input type="number" class="form-control" id="deal_queue_redis_db" min="0" value="{{ config.deal_queue_redis_db }}">
+        </div>
+        <div class="col-4 mb-2">
+          <label class="cfg-label" for="deal_queue_redis_password">密码</label>
+          <input type="password" class="form-control" id="deal_queue_redis_password" value="{{ config.deal_queue_redis_password }}">
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_poll_interval">轮询间隔（秒）</label>
+          <input type="number" class="form-control" id="deal_queue_poll_interval" min="2" max="600" value="{{ config.deal_queue_poll_interval }}">
+          <div class="cfg-hint">2~600，默认 5</div>
+        </div>
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_privacy">朋友圈可见范围</label>
+          <select class="form-control" id="deal_queue_privacy">
+            <option value="public" {% if config.deal_queue_privacy == 'public' %}selected{% endif %}>公开</option>
+            <option value="friends_only" {% if config.deal_queue_privacy == 'friends_only' %}selected{% endif %}>仅好友</option>
+            <option value="tagged" {% if config.deal_queue_privacy == 'tagged' %}selected{% endif %}>选中的标签</option>
+            <option value="friends_except" {% if config.deal_queue_privacy == 'friends_except' %}selected{% endif %}>不给谁看</option>
+          </select>
+        </div>
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_moments_prefix">文案前缀</label>
+          <input type="text" class="form-control" id="deal_queue_moments_prefix" placeholder="如 #同城信息#" value="{{ config.deal_queue_moments_prefix }}">
+        </div>
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_moments_max_len">文案截断长度</label>
+          <input type="number" class="form-control" id="deal_queue_moments_max_len" min="100" max="2000" value="{{ config.deal_queue_moments_max_len }}">
+          <div class="cfg-hint">100~2000，默认 2000</div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_pending_max">待发布池上限</label>
+          <input type="number" class="form-control" id="deal_queue_pending_max" min="1" max="10000" value="{{ config.deal_queue_pending_max }}">
+          <div class="cfg-hint">1~10000，默认 500；达到后暂停拉取</div>
+        </div>
+      </div>
+      <hr style="border-color:#eee;margin:16px 0;">
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="deal_queue_auto_approve_switch" name="deal_queue_auto_approve_switch" {% if config.deal_queue_auto_approve_switch %}checked{% endif %}>
+        <label for="deal_queue_auto_approve_switch">自动审核发布</label>
+        <span class="switch-desc">纯放行，入池满延迟后按随机间隔自动发布，无需人工确认</span>
+      </div>
+      <div class="row mt-3">
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_auto_approve_delay">审核延迟（秒）</label>
+          <input type="number" class="form-control" id="deal_queue_auto_approve_delay" min="0" max="86400" value="{{ config.deal_queue_auto_approve_delay }}">
+          <div class="cfg-hint">0~86400，默认 60；入池后需等待该时长</div>
+        </div>
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_publish_interval_min">发布间隔下限（秒）</label>
+          <input type="number" class="form-control" id="deal_queue_publish_interval_min" min="1" max="86400" value="{{ config.deal_queue_publish_interval_min }}">
+          <div class="cfg-hint">1~86400，默认 300</div>
+        </div>
+        <div class="col-3 mb-2">
+          <label class="cfg-label" for="deal_queue_publish_interval_max">发布间隔上限（秒）</label>
+          <input type="number" class="form-control" id="deal_queue_publish_interval_max" min="1" max="86400" value="{{ config.deal_queue_publish_interval_max }}">
+          <div class="cfg-hint">自动不小于下限，默认 600</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 朋友圈发布鼠标空闲检测 -->
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-mouse"></i><h5>发布前等待鼠标空闲</h5><span class="desc">避免与真人鼠标操作争抢导致点击失败</span></div>
+      <div class="cfg-hint" style="margin-bottom:14px;padding:10px 14px;background:#f3f0ff;border:1px solid #c9b8ff;border-radius:6px;color:#4a1fa8;font-size:12.5px;line-height:1.9;">
+        <i class="bi bi-info-circle" style="color:#7c4dff;"></i>
+        <strong>功能说明：</strong>发布朋友圈（含同城信息/定时/随机）前，先检测鼠标是否空闲，避免您正在操作电脑时机器人移动鼠标点击失败。<br>
+        若检测到鼠标持续静止达到设定秒数才执行发布；若一直等不到空闲（超时）则放弃本次自动发布，下次轮询再试。
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="moments_wait_mouse_idle_switch" name="moments_wait_mouse_idle_switch" {% if config.moments_wait_mouse_idle_switch %}checked{% endif %}>
+        <label for="moments_wait_mouse_idle_switch">启用发布前鼠标空闲检测</label>
+        <span class="switch-desc">默认开启；关闭则发布前不等待鼠标</span>
+      </div>
+      <div class="row mt-3">
+        <div class="col-6 mb-2">
+          <label class="cfg-label" for="moments_mouse_idle_seconds">需持续空闲秒数</label>
+          <input type="number" class="form-control" id="moments_mouse_idle_seconds" min="0.5" max="60" step="0.5" value="{{ config.moments_mouse_idle_seconds }}">
+          <div class="cfg-hint">鼠标保持不动达到该秒数才执行，默认 2</div>
+        </div>
+        <div class="col-6 mb-2">
+          <label class="cfg-label" for="moments_mouse_max_wait_seconds">最大等待秒数</label>
+          <input type="number" class="form-control" id="moments_mouse_max_wait_seconds" min="1" max="600" step="1" value="{{ config.moments_mouse_max_wait_seconds }}">
+          <div class="cfg-hint">超过则放弃本次自动发布，默认 60</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 待发布统计与列表 -->
+    <div class="cfg-card">
+      <div class="cfg-card-header"><i class="bi bi-list-ul"></i><h5>待发布列表</h5><span class="desc">人工确认后发布朋友圈，未确认的自动入池</span></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:20px;">
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-clock"></i></div>
+          <div class="stat-val" id="deal-pending-count">-</div>
+          <div class="stat-label">待发布</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-send"></i></div>
+          <div class="stat-val" id="deal-publishing-count">-</div>
+          <div class="stat-label">发布中</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-x-circle"></i></div>
+          <div class="stat-val" id="deal-failed-count">-</div>
+          <div class="stat-label">发布失败</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-hdd-network"></i></div>
+          <div class="stat-val" id="deal-remote-len">-</div>
+          <div class="stat-label">远程队列长度</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-alarm"></i></div>
+          <div class="stat-val" id="deal-next-publish">-</div>
+          <div class="stat-label">下次自动发布</div>
+        </div>
+      </div>
+      <div id="deal-list" style="display:none;">
+        <div id="deal-list-container" style="display:flex;flex-direction:column;gap:12px;"></div>
+      </div>
+      <div id="deal-list-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">暂无待发布记录</div>
+    </div>
+  </div>
+
   <!-- ===== Tab: StartStop ===== -->
   <div class="config-panel" id="tab-startstop">
     <div class="cfg-card">
@@ -2213,6 +2396,21 @@ body.mobile-nav-open { overflow: hidden; }
             </label>
           </div>
           <div class="cfg-hint">当单个用户回复次数超限时，机器人将发送此固定回复，留空则不回复。</div>
+        </div>
+      </div>
+      <div class="switch-row">
+        <input class="form-check-input" type="checkbox" id="chat_reply_confirm_switch" {% if config.get('chat_reply_confirm_switch', False) %}checked{% endif %}>
+        <label for="chat_reply_confirm_switch">私聊回复前先发送确认提示</label>
+        <span class="switch-desc">开启后私聊触发 AI 回复前先发送一条确认消息，等对方回复后再继续</span>
+      </div>
+      <div id="chat-reply-confirm-settings" style="{% if not config.get('chat_reply_confirm_switch', False) %}display:none;{% endif %}">
+        <div class="row g-3" style="margin-top:4px;">
+          <div class="col-6">
+            <label class="cfg-label" for="chat_reply_confirm_wait_timeout">确认等待超时（秒）</label>
+            <input type="number" class="form-control" id="chat_reply_confirm_wait_timeout" min="1" max="3600"
+              value="{{ config.get('chat_reply_confirm_wait_timeout', 300) }}" placeholder="300">
+            <div class="cfg-hint">等待对方确认回复的最长时间，超时则放弃本次回复</div>
+          </div>
         </div>
       </div>
       <div class="switch-row">
@@ -2419,6 +2617,11 @@ body.mobile-nav-open { overflow: hidden; }
           <div class="stat-val" id="tasks-failed">-</div>
           <div class="stat-label">失败数</div>
         </div>
+        <div class="stat-card">
+          <div class="stat-icon"><i class="bi bi-inbox"></i></div>
+          <div class="stat-val" id="tasks-dead">-</div>
+          <div class="stat-label">死信</div>
+        </div>
       </div>
       <!-- 操作按钮 -->
       <div style="display:flex;gap:10px;margin-bottom:20px;">
@@ -2448,6 +2651,28 @@ body.mobile-nav-open { overflow: hidden; }
           </table>
         </div>
         <div id="tasks-pending-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">暂无待执行任务</div>
+      </div>
+      <!-- 死信队列表格 -->
+      <div class="mb-4">
+        <div style="font-size:14px;font-weight:700;color:var(--card-fg);margin-bottom:12px;">死信队列
+          <span style="font-size:12px;font-weight:400;color:var(--muted);">（重试耗尽的任务，可恢复或丢弃）</span>
+        </div>
+        <div id="tasks-dead-list" style="display:none;">
+          <table class="table table-sm" style="width:100%;border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">任务ID</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">类型</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">重试次数</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">错误信息</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">结束时间</th>
+                <th style="text-align:left;padding:8px 12px;font-size:12.5px;font-weight:600;color:var(--muted);">操作</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-dead-body"></tbody>
+          </table>
+        </div>
+        <div id="tasks-dead-empty" style="padding:16px;text-align:center;color:var(--muted);font-size:13px;">暂无死信任务</div>
       </div>
       <!-- 任务历史表格 -->
       <div>
@@ -2647,6 +2872,12 @@ body.mobile-nav-open { overflow: hidden; }
           <input type="number" class="form-control" id="chatlog_request_timeout" min="1" max="30"
                  value="{{ config.get('chatlog_request_timeout', 5) }}" placeholder="5">
           <div class="cfg-hint">单次请求超时时间</div>
+        </div>
+        <div class="col-6">
+          <label class="cfg-label" for="ai_request_timeout">AI 接口超时（秒）</label>
+          <input type="number" class="form-control" id="ai_request_timeout" min="5" max="600"
+                 value="{{ config.get('ai_request_timeout', 120) }}" placeholder="120">
+          <div class="cfg-hint">Dify/Coze 等 AI 接口请求超时，慢模型建议 120+</div>
         </div>
       </div>
       <div class="mb-3">
@@ -3086,6 +3317,18 @@ $(function(){
     }
   });
 
+  function collectWorkflowInputKey($item){
+    var parts = [];
+    $item.find('.api-workflow-input-row').each(function(){
+      var key = $(this).find('.api-workflow-input-key-field').val();
+      var val = $(this).find('.api-workflow-input-value-field').val();
+      key = (key || '').trim();
+      val = (val || '').trim();
+      if(key){ parts.push(key + (val ? '=' + val : '')); }
+    });
+    return parts.join(',') || 'query';
+  }
+
   function getApiConfigFromItem($item){
     var $k = $item.find('.api-key-input');
     var typedKey = $k.val();
@@ -3096,9 +3339,41 @@ $(function(){
       sdk: $item.find('.api-sdk-select').val(),
       model: $item.find('.api-model-input').val(),
       url: $item.find('.api-url-input').val(),
-      key: keyToUse
+      key: keyToUse,
+      app_type: $item.find('.api-app-type-select').val() || 'chat',
+      workflow_input_key: collectWorkflowInputKey($item),
+      workflow_output_key: $item.find('.api-workflow-output-key-input').val() || 'text'
     };
   }
+
+  // 添加入参变量行 / 删除行
+  function addWorkflowInputRow($rows){
+    $rows.append(
+      '<div class="api-workflow-input-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">'+
+        '<input type="text" class="form-control api-workflow-input-key-field" value="" placeholder="变量名" style="flex:1;">'+
+        '<input type="text" class="form-control api-workflow-input-value-field" value="" placeholder="$message / $prompt / $model / $user_key / $history / $time / $date / 常量" style="flex:2;">'+
+        '<button type="button" class="btn-rm-row" title="删除该入参" style="flex:0 0 28px;height:32px;border:1px solid var(--border);background:transparent;border-radius:4px;color:var(--muted);cursor:pointer;"><i class="bi bi-x"></i></button>'+
+      '</div>'
+    );
+  }
+  $(document).on('click', '.btn-add-workflow-input', function(){ addWorkflowInputRow($(this).closest('.api-config-item').find('.api-workflow-input-rows')); });
+  $(document).on('click', '.btn-rm-row', function(){
+    var $item = $(this).closest('.api-config-item');
+    $(this).closest('.api-workflow-input-row').remove();
+    if($item.find('.api-workflow-input-row').length === 0){ addWorkflowInputRow($item.find('.api-workflow-input-rows')); }
+  });
+
+  // 根据 SDK 与应用类型显隐 Dify 专属字段
+  function syncApiDifyFields($item){
+    var sdk = $item.find('.api-sdk-select').val() || '';
+    var appType = $item.find('.api-app-type-select').val() || 'chat';
+    var isDify = (sdk === 'Dify');
+    $item.find('.dify-api-fields').toggle(isDify);
+    $item.find('.api-workflow-only').toggle(isDify && appType === 'workflow');
+  }
+  $(document).on('change', '.api-sdk-select', function(){ syncApiDifyFields($(this).closest('.api-config-item')); });
+  $(document).on('change', '.api-app-type-select', function(){ syncApiDifyFields($(this).closest('.api-config-item')); });
+  $('.api-config-item').each(function(){ syncApiDifyFields($(this)); });
 
   // ===== 接口配置：单选框高亮 + 当前使用 badge =====
   $(document).on('change', '.api-radio', function(){
@@ -3197,6 +3472,24 @@ $(function(){
             '<input type="text" class="form-control api-url-input" value="" placeholder="https://api.example.com"></div>'+
           '<div class="col-12"><label class="cfg-label">API Key</label>'+
             '<input type="text" class="form-control api-key-input" data-real-key="" placeholder="sk-..." autocomplete="off"></div>'+
+          '<div class="dify-api-fields" style="display:none;">'+
+            '<div class="col-12 col-md-3"><label class="cfg-label">应用类型</label>'+
+              '<select class="form-select api-app-type-select">'+
+                '<option value="chat" selected>Chat（聊天/会话）</option>'+
+                '<option value="workflow">Workflow（工作流）</option>'+
+              '</select></div>'+
+            '<div class="col-12 col-md-6 api-workflow-only" style="display:none;"><label class="cfg-label">入参变量</label>'+
+              '<div class="api-workflow-input-rows">'+
+                '<div class="api-workflow-input-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">'+
+                  '<input type="text" class="form-control api-workflow-input-key-field" value="query" placeholder="变量名" style="flex:1;">'+
+                  '<input type="text" class="form-control api-workflow-input-value-field" value="" placeholder="$message / $prompt / $model / $user_key / $history / $time / $date / 常量" style="flex:2;">'+
+                  '<button type="button" class="btn-rm-row" title="删除该入参" style="flex:0 0 28px;height:32px;border:1px solid var(--border);background:transparent;border-radius:4px;color:var(--muted);cursor:pointer;"><i class="bi bi-x"></i></button>'+
+                '</div>'+
+              '</div>'+
+              '<button type="button" class="btn-add-workflow-input" style="border:1px dashed var(--border);background:transparent;color:var(--muted);padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer;width:100%;"><i class="bi bi-plus"></i> 添加入参变量</button></div>'+
+            '<div class="col-12 col-md-3 api-workflow-only" style="display:none;"><label class="cfg-label">输出变量名</label>'+
+              '<input type="text" class="form-control api-workflow-output-key-input" value="text" placeholder="text"></div>'+
+          '</div>'+
         '</div>'+
       '</div>';
     $('#api_configs_container').append(html);
@@ -3333,6 +3626,11 @@ $(function(){
   // ===== 发送延迟开关联动 =====
   $('#reply_delay_switch').on('change', function(){
     $('#reply-delay-settings').toggle(this.checked);
+  });
+
+  // ===== 私聊回复确认开关联动 =====
+  $('#chat_reply_confirm_switch').on('change', function(){
+    $('#chat-reply-confirm-settings').toggle(this.checked);
   });
 
   // ===== 回复轮数限制开关联动 =====
@@ -4021,7 +4319,10 @@ $(function(){
         sdk:sdk,
         model:model,
         url:url,
-        key:keyToSave
+        key:keyToSave,
+        app_type: $(this).find('.api-app-type-select').val() || 'chat',
+        workflow_input_key: collectWorkflowInputKey($(this)),
+        workflow_output_key: $(this).find('.api-workflow-output-key-input').val() || 'text'
       });
     });
     var configData={
@@ -4088,6 +4389,8 @@ $(function(){
       chat_max_round_reset_days:Math.max(0,Math.min(365,parseInt($('#chat_max_round_reset_days').val())||0)),
       chat_max_round_reply:$('#chat_max_round_reply').val().trim(),
       chat_max_round_reply_once:$('#chat_max_round_reply_once').is(':checked'),
+      chat_reply_confirm_switch:$('#chat_reply_confirm_switch').is(':checked'),
+      chat_reply_confirm_wait_timeout:Math.max(1,Math.min(3600,parseInt($('#chat_reply_confirm_wait_timeout').val())||300)),
       chat_split_reply_switch:$('#chat_split_reply_switch').is(':checked'),
       chat_split_max_chars:Math.max(1,parseInt($('#chat_split_max_chars').val())||100),
       chat_split_max_count:Math.max(1,parseInt($('#chat_split_max_count').val())||4),
@@ -4098,9 +4401,27 @@ $(function(){
       chatlog_url:$('#chatlog_url').val().trim()||'http://127.0.0.1:5030',
       chatlog_polling_interval:Math.max(1,parseInt($('#chatlog_polling_interval').val())||2),
       chatlog_request_timeout:Math.max(1,parseInt($('#chatlog_request_timeout').val())||5),
+      ai_request_timeout:Math.max(5,Math.min(600,parseInt($('#ai_request_timeout').val())||120)),
       chatlog_context_switch:$('#chatlog_context_switch').is(':checked'),
       chatlog_context_count:Math.max(10,parseInt($('#chatlog_context_count').val())||50),
       chatlog_reply_delay:Math.max(0,parseInt($('#chatlog_reply_delay').val())||60),
+      deal_queue_consumer_switch:$('#deal_queue_consumer_switch').is(':checked'),
+      deal_queue_redis_host:$('#deal_queue_redis_host').val().trim()||'122.51.49.63',
+      deal_queue_redis_port:Math.max(1,Math.min(65535,parseInt($('#deal_queue_redis_port').val())||6379)),
+      deal_queue_redis_db:Math.max(0,parseInt($('#deal_queue_redis_db').val())||0),
+      deal_queue_redis_password:$('#deal_queue_redis_password').val(),
+      deal_queue_poll_interval:Math.max(2,Math.min(600,parseInt($('#deal_queue_poll_interval').val())||5)),
+      deal_queue_privacy:$('#deal_queue_privacy').val()||'public',
+      deal_queue_moments_prefix:$('#deal_queue_moments_prefix').val(),
+      deal_queue_moments_max_len:Math.max(100,Math.min(2000,parseInt($('#deal_queue_moments_max_len').val())||2000)),
+      deal_queue_pending_max:Math.max(1,Math.min(10000,parseInt($('#deal_queue_pending_max').val())||500)),
+      deal_queue_auto_approve_switch:$('#deal_queue_auto_approve_switch').is(':checked'),
+      deal_queue_auto_approve_delay:Math.max(0,Math.min(86400,parseInt($('#deal_queue_auto_approve_delay').val())||60)),
+      deal_queue_publish_interval_min:Math.max(1,Math.min(86400,parseInt($('#deal_queue_publish_interval_min').val())||300)),
+      deal_queue_publish_interval_max:Math.max(1,Math.min(86400,parseInt($('#deal_queue_publish_interval_max').val())||600)),
+      moments_wait_mouse_idle_switch:$('#moments_wait_mouse_idle_switch').is(':checked'),
+      moments_mouse_idle_seconds:Math.max(0.5,Math.min(60,parseFloat($('#moments_mouse_idle_seconds').val())||2)),
+      moments_mouse_max_wait_seconds:Math.max(1,Math.min(600,parseFloat($('#moments_mouse_max_wait_seconds').val())||60)),
       siver_panel_enabled:$('#siver_panel_enabled').is(':checked'),
       siver_panel_activation_code:$('#siver_panel_activation_code').val().trim(),
       siver_panel_slug:normalizeSiverPanelSlug($('#siver_panel_slug').val()),
@@ -5463,19 +5784,21 @@ function refreshTasks(){
     $('#tasks-current').text(currentTaskText);
     $('#tasks-success').text(d.success_count !== undefined ? d.success_count : '-');
     $('#tasks-failed').text(d.failed_count !== undefined ? d.failed_count : '-');
+    $('#tasks-dead').text(d.dead_count !== undefined ? d.dead_count : '-');
 
-    var pendingList = d.pending_tasks || [];
+      var pendingList = d.pending_tasks || [];
     if(pendingList.length > 0){
       $('#tasks-pending-list').show();
       $('#tasks-pending-empty').hide();
       var html = '';
       pendingList.forEach(function(task){
+        var targetText = (task.params && (task.params.who || task.params.chat_name || task.params.target || task.params.name)) || '-';
         html += '<tr style="border-bottom:1px solid var(--border);">'+
           '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.id+'</td>'+
           '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.type+'</td>'+
-          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.target+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+targetText+'</td>'+
           '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.priority+'</td>'+
-          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.create_time+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(task.create_time || '-')+'</td>'+
           '<td style="padding:8px 12px;">'+
             '<button type="button" class="btn-rm" style="padding:4px 8px;font-size:12px;" onclick="cancelTask(\''+task.id+'\')">取消</button>'+
           '</td></tr>';
@@ -5492,20 +5815,74 @@ function refreshTasks(){
       $('#tasks-history-empty').hide();
       var html = '';
       historyList.forEach(function(task){
-        var statusClass = task.status === 'success' ? '#07C160' : task.status === 'failed' ? '#FA5151' : '#FFC300';
+        var statusClass = task.status === 'completed' ? '#07C160' : task.status === 'failed' ? '#FA5151' : '#FFC300';
+        var statusText = task.status === 'completed' ? '成功' : task.status === 'failed' ? '失败' : task.status === 'cancelled' ? '已取消' : (task.status || '-');
+        var resultText = '-';
+        if(task.result && typeof task.result === 'object'){
+          resultText = task.result.message || task.result.status || JSON.stringify(task.result);
+        } else if(task.result){
+          resultText = String(task.result);
+        }
         html += '<tr style="border-bottom:1px solid var(--border);">'+
           '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.id+'</td>'+
           '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.type+'</td>'+
-          '<td style="padding:8px 12px;font-size:13px;color:'+statusClass+';font-weight:600;">'+task.status+'</td>'+
-          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(task.result || '-')+'</td>'+
-          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.time+'</td></tr>';
+          '<td style="padding:8px 12px;font-size:13px;color:'+statusClass+';font-weight:600;">'+statusText+'</td>'+
+          '<td style="padding:8px 12px;font-size:12px;color:var(--card-fg);max-width:260px;word-break:break-all;">'+resultText+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(task.end_time || task.create_time || '-')+'</td></tr>';
       });
       $('#tasks-history-body').html(html);
     } else {
       $('#tasks-history-list').hide();
       $('#tasks-history-empty').show();
     }
+
+    var deadList = d.dead_tasks || [];
+    if(deadList.length > 0){
+      $('#tasks-dead-list').show();
+      $('#tasks-dead-empty').hide();
+      var html = '';
+      deadList.forEach(function(task){
+        html += '<tr style="border-bottom:1px solid var(--border);">'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.id+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+task.type+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(task.retry_count || 0)+'</td>'+
+          '<td style="padding:8px 12px;font-size:12px;color:#FA5151;max-width:260px;word-break:break-all;">'+(task.error || '-')+'</td>'+
+          '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(task.end_time || '-')+'</td>'+
+          '<td style="padding:8px 12px;white-space:nowrap;">'+
+            '<button type="button" class="btn-ok" style="padding:4px 8px;font-size:12px;margin-right:6px;" onclick="recoverTask(\''+task.id+'\')">恢复</button>'+
+            '<button type="button" class="btn-rm" style="padding:4px 8px;font-size:12px;" onclick="discardTask(\''+task.id+'\')">丢弃</button>'+
+          '</td></tr>';
+      });
+      $('#tasks-dead-body').html(html);
+    } else {
+      $('#tasks-dead-list').hide();
+      $('#tasks-dead-empty').show();
+    }
   });
+}
+
+function recoverTask(taskId){
+  $.post('/api/tasks/recover', {task_id: taskId}, function(res){
+    if(res.code === 0){
+      svModal.success('任务已恢复，重新加入待执行队列', '操作成功');
+      refreshTasks();
+    } else {
+      svModal.error(res.message || '恢复失败', '操作失败');
+    }
+  }, 'json');
+}
+
+function discardTask(taskId){
+  svModal.confirm('确定丢弃该死信任务？丢弃后将不再重试。', function(){
+    $.post('/api/tasks/discard', {task_id: taskId}, function(res){
+      if(res.code === 0){
+        svModal.success('死信任务已丢弃', '操作成功');
+        refreshTasks();
+      } else {
+        svModal.error(res.message || '丢弃失败', '操作失败');
+      }
+    }, 'json');
+  }, '丢弃任务', '确定丢弃', '取消');
 }
 
 function cancelTask(taskId){
@@ -5587,15 +5964,24 @@ function refreshMessages(){
       $('#msgs-pending-empty').hide();
       var html = '';
       pendingList.forEach(function(msg){
+        var srcBadge = msg.pending_source === 'keyword' ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#FFF3E0;color:#E65100;margin-left:8px;">关键字</span>'
+          : msg.pending_source === 'ai_error' ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#FFEBEE;color:#C62828;margin-left:8px;">AI生成失败</span>'
+          : msg.pending_source === 'ai' ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#E8F5E9;color:#2E7D32;margin-left:8px;">AI</span>'
+          : '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#ECEFF1;color:#546E7A;margin-left:8px;">生成中</span>';
         html += '<div style="padding:12px 14px;background:var(--muted-bg);border:1px solid var(--border);border-radius:8px;">'+
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'+
-            '<span style="font-weight:600;font-size:13.5px;color:var(--card-fg);">'+msg.chat_name+'</span>'+
-            '<span style="font-size:12px;color:var(--muted);">'+msg.time+'</span>'+
+            '<span style="font-weight:600;font-size:13.5px;color:var(--card-fg);">'+msg.chat_name+srcBadge+'</span>'+
+            '<span style="font-size:12px;color:var(--muted);">'+msg.receive_time+'</span>'+
           '</div>'+
-          '<div style="font-size:13px;color:var(--card-fg);margin-bottom:10px;word-break:break-all;">'+msg.content+'</div>'+
+          '<div style="font-size:13px;color:var(--card-fg);margin-bottom:6px;word-break:break-all;"><b style="color:var(--muted);font-weight:600;">收到：</b>'+msg.content+'</div>'+
+          '<div style="font-size:13px;margin-bottom:10px;padding:6px 10px;background:rgba(7,193,96,.08);border-left:3px solid var(--primary);border-radius:4px;">'+
+            '<b style="color:var(--primary);font-weight:600;">预生成回复（可修改）：</b>'+
+            '<textarea class="form-control form-control-sm msg-pending-reply" rows="2" style="margin-top:6px;font-size:13px;resize:vertical;width:100%;" data-msgid="'+msg.id+'" data-chat="'+msg.chat_name+'">'+(msg.pending_reply || '')+'</textarea>'+
+            '<div style="font-size:11px;color:var(--muted);margin-top:4px;">确认时将发送上框修改后的内容；留空且无预生成时等待 AI 生成结果。</div>'+
+          '</div>'+
           '<div style="display:flex;gap:8px;justify-content:flex-end;">'+
-            '<button type="button" class="btn-rm" style="padding:4px 12px;font-size:12px;background:#f2f2f2;color:#666;border:1px solid var(--border);" onclick="rejectMessage(\''+msg.chat_name+'\', \''+msg.message_id+'\')">拒绝</button>'+
-            '<button type="button" class="btn-add" style="padding:4px 12px;font-size:12px;background:var(--primary);color:#fff;border:none;" onclick="confirmMessage(\''+msg.chat_name+'\', \''+msg.message_id+'\')">确认</button>'+
+            '<button type="button" class="btn-rm" style="padding:4px 12px;font-size:12px;background:#f2f2f2;color:#666;border:1px solid var(--border);" onclick="rejectMessage(\''+msg.chat_name+'\', \''+msg.id+'\')">拒绝</button>'+
+            '<button type="button" class="btn-add" style="padding:4px 12px;font-size:12px;background:var(--primary);color:#fff;border:none;" onclick="confirmMessage(\''+msg.chat_name+'\', \''+msg.id+'\', this)">确认</button>'+
           '</div></div>';
       });
       $('#msgs-pending-container').html(html);
@@ -5606,26 +5992,165 @@ function refreshMessages(){
   });
 }
 
-function confirmMessage(chatName, msgId){
-  $.post('/api/messages/confirm', {chat_name: chatName, message_id: msgId}, function(res){
-    if(res.code === 0){
-      svModal.success('消息已确认', '操作成功');
-      refreshMessages();
-    } else {
-      svModal.error(res.message || '确认失败', '操作失败');
+function confirmMessage(chatName, msgId, btnEl){
+  var reply = '';
+  var $card = btnEl ? $(btnEl).closest('div') : null;
+  if($card){
+    var $ta = $card.find('.msg-pending-reply[data-msgid="'+msgId+'"]');
+    if($ta.length) reply = $ta.val().trim();
+  }
+  $.ajax({
+    url: '/api/messages/confirm',
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({chat_name: chatName, message_id: msgId, reply: reply}),
+    success: function(res){
+      if(res.code === 0){
+        svModal.success('消息已确认', '操作成功');
+        refreshMessages();
+      } else {
+        svModal.error(res.message || '确认失败', '操作失败');
+      }
+    },
+    error: function(xhr){
+      svModal.error(xhr.responseJSON && xhr.responseJSON.message || ('请求失败 HTTP ' + xhr.status), '操作失败');
     }
-  }, 'json');
+  });
 }
 
 function rejectMessage(chatName, msgId){
-  $.post('/api/messages/reject', {chat_name: chatName, message_id: msgId}, function(res){
-    if(res.code === 0){
-      svModal.success('消息已拒绝', '操作成功');
-      refreshMessages();
-    } else {
-      svModal.error(res.message || '拒绝失败', '操作失败');
+  $.ajax({
+    url: '/api/messages/reject',
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({chat_name: chatName, message_id: msgId}),
+    success: function(res){
+      if(res.code === 0){
+        svModal.success('消息已拒绝', '操作成功');
+        refreshMessages();
+      } else {
+        svModal.error(res.message || '拒绝失败', '操作失败');
+      }
+    },
+    error: function(xhr){
+      svModal.error(xhr.responseJSON && xhr.responseJSON.message || ('请求失败 HTTP ' + xhr.status), '操作失败');
     }
-  }, 'json');
+  });
+}
+
+// ===== Deal Panel =====
+var dealPollTimer = null;
+var DEAL_POLL_MS = 5000;
+
+function refreshDeals(){
+  return $.getJSON('/api/deals', function(res){
+    if(!res || res.code !== 0) return;
+    var d = res.data || {};
+    var stats = d.stats || {};
+    $('#deal-pending-count').text(stats.pending_count !== undefined ? stats.pending_count : '-');
+    $('#deal-publishing-count').text(stats.publishing_count !== undefined ? stats.publishing_count : '-');
+    $('#deal-failed-count').text(stats.failed_count !== undefined ? stats.failed_count : '-');
+    $('#deal-remote-len').text(stats.remote_len !== undefined && stats.remote_len >= 0 ? stats.remote_len : '不可用');
+    var np = stats.next_publish;
+    if(np && parseInt(np) > 0){
+      var secs = parseInt(np) - Math.floor(Date.now()/1000);
+      if(secs < 0) secs = 0;
+      var hh = Math.floor(secs/3600), mm = Math.floor((secs%3600)/60), ss = secs%60;
+      $('#deal-next-publish').text(('00'+hh).slice(-2)+':'+('00'+mm).slice(-2)+':'+('00'+ss).slice(-2));
+    } else {
+      $('#deal-next-publish').text('-');
+    }
+
+    var items = d.items || [];
+    if(items.length > 0){
+      $('#deal-list').show();
+      $('#deal-list-empty').hide();
+      var html = '';
+      items.forEach(function(item){
+        var field = item.field || '';
+        var source = item.source || '';
+        var text = item.text || '';
+        var status = item.status || 'pending';
+        var srcBadge = source === 'recruitment'
+          ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#E3F2FD;color:#1565C0;margin-left:8px;">招聘</span>'
+          : source === 'shun_fen_che'
+          ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#FFF3E0;color:#E65100;margin-left:8px;">顺风车</span>'
+          : '';
+        var statusBadge = status === 'pending'
+          ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#FFF8E1;color:#F57F17;margin-left:8px;">待发布</span>'
+          : status === 'publishing'
+          ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#E3F2FD;color:#1565C0;margin-left:8px;">发布中</span>'
+          : status === 'published'
+          ? '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#E8F5E9;color:#2E7D32;margin-left:8px;">已发布</span>'
+          : '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:11px;background:#FFEBEE;color:#C62828;margin-left:8px;">发布失败</span>';
+        var escField = field.replace(/'/g, "\\'");
+        var escText = (text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        html += '<div style="padding:12px 14px;background:var(--muted-bg);border:1px solid var(--border);border-radius:8px;">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'+
+            '<span style="font-weight:600;font-size:13.5px;color:var(--card-fg);">'+field+srcBadge+statusBadge+'</span>'+
+            '<span style="font-size:12px;color:var(--muted);">'+(item.updated_at || '')+'</span>'+
+          '</div>'+
+          '<div style="font-size:13px;color:var(--card-fg);margin-bottom:10px;word-break:break-all;white-space:pre-line;">'+escText+'</div>'+
+          '<div style="display:flex;gap:8px;justify-content:flex-end;">'+
+            '<button type="button" class="btn-rm" style="padding:4px 12px;font-size:12px;background:#f2f2f2;color:#666;border:1px solid var(--border);" onclick="dealRepush(\''+escField+'\')">重推</button>'+
+            '<button type="button" class="btn-rm" style="padding:4px 12px;font-size:12px;background:#f2f2f2;color:#666;border:1px solid var(--border);" onclick="dealDiscard(\''+escField+'\')">丢弃</button>'+
+            '<button type="button" class="btn-add" style="padding:4px 12px;font-size:12px;background:var(--primary);color:#fff;border:none;" onclick="dealPublish(\''+escField+'\')">发布</button>'+
+          '</div></div>';
+      });
+      $('#deal-list-container').html(html);
+    } else {
+      $('#deal-list').hide();
+      $('#deal-list-empty').show();
+    }
+  });
+}
+
+function dealAction(url, field, successMsg){
+  $.ajax({
+    url: url,
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({field: field}),
+    success: function(res){
+      if(res.code === 0){
+        svModal.success(successMsg, '操作成功');
+        refreshDeals();
+      } else {
+        svModal.error(res.message || '操作失败', '操作失败');
+      }
+    },
+    error: function(xhr){
+      svModal.error(xhr.responseJSON && xhr.responseJSON.message || ('请求失败 HTTP ' + xhr.status), '操作失败');
+    }
+  });
+}
+
+function dealPublish(field){ dealAction('/api/deals/publish', field, '已提交发布'); }
+function dealDiscard(field){ dealAction('/api/deals/discard', field, '已丢弃'); }
+function dealRepush(field){ dealAction('/api/deals/re_push', field, '已重推'); }
+
+function scheduleDealPolling(delay){
+  clearTimeout(dealPollTimer);
+  dealPollTimer = setTimeout(function(){ triggerDealPolling(false); }, delay);
+}
+
+function triggerDealPolling(immediate){
+  clearTimeout(dealPollTimer);
+  refreshDeals().always(function(){
+    scheduleDealPolling(DEAL_POLL_MS);
+  });
+}
+
+function syncDealPolling(immediate){
+  if(immediate && getActiveTabId() === 'tab-deal'){
+    triggerDealPolling(true);
+    return;
+  }
+  if(getActiveTabId() === 'tab-deal'){
+    scheduleDealPolling(DEAL_POLL_MS);
+  } else {
+    clearTimeout(dealPollTimer);
+  }
 }
 
 $('#btn-msg-search').click(function(){
@@ -5694,12 +6219,15 @@ function syncMessagesPolling(immediate){
 // ===== Contacts Panel =====
 var contactsList = [];
 
-function refreshContacts(){
+function refreshContacts(quiet){
+  var isQuiet = quiet === true;
   var $btn = $('#btn-refresh-contacts');
-  $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 刷新中...');
+  if(!isQuiet){
+    $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 刷新中...');
+  }
   $.getJSON('/api/contacts', function(res){
     if(!res || res.code !== 0){
-      svModal.error(res.message || '获取联系人失败', '操作失败');
+      if(!isQuiet) svModal.error(res.message || '获取联系人失败', '操作失败');
       return;
     }
     var d = res.data || {};
@@ -5708,10 +6236,26 @@ function refreshContacts(){
     $('#contacts-friends').text(d.friend_count !== undefined ? d.friend_count : '-');
     $('#contacts-groups').text(d.group_count !== undefined ? d.group_count : '-');
 
-    renderContactsList(contactsList);
+    renderContactListWithFilter();
   }).always(function(){
-    $btn.prop('disabled', false).html('<i class="bi bi-arrow-clockwise"></i> 刷新联系人');
+    if(!isQuiet){
+      $btn.prop('disabled', false).html('<i class="bi bi-arrow-clockwise"></i> 刷新联系人');
+    }
   });
+}
+
+function renderContactListWithFilter(){
+  var keyword = $('#contact-search-input').val().trim().toLowerCase();
+  if(!keyword){
+    renderContactsList(contactsList);
+    return;
+  }
+  var filtered = contactsList.filter(function(c){
+    return (c.remark || '').toLowerCase().indexOf(keyword) !== -1 ||
+           (c.nickName || c.nickname || '').toLowerCase().indexOf(keyword) !== -1 ||
+           (c.userName || c.wxid || '').toLowerCase().indexOf(keyword) !== -1;
+  });
+  renderContactsList(filtered);
 }
 
 function renderContactsList(list){
@@ -5724,12 +6268,22 @@ function renderContactsList(list){
       var nickname = contact.nickName || contact.nickname || '';
       var alias = contact.alias || contact.wxid || '';
       var remark = contact.remark || '';
-      html += '<tr style="border-bottom:1px solid var(--border);">'+
+      var unreadCount = contact.unread_count || 0;
+      var pendingCount = contact.pending_count || 0;
+      var hasAction = unreadCount > 0 || pendingCount > 0;
+      var badgeHtml = '';
+      if(unreadCount > 0){
+        badgeHtml += '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:#FFEBEE;color:#C62828;margin-right:6px;">未读 '+unreadCount+'</span>';
+      }
+      if(pendingCount > 0){
+        badgeHtml += '<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:#FFF3E0;color:#E65100;margin-right:6px;">待处理 '+pendingCount+'</span>';
+      }
+      html += '<tr style="border-bottom:1px solid var(--border);'+(hasAction?'background:rgba(255,193,7,.10);':'')+'">'+
         '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(remark || '-')+'</td>'+
         '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(nickname || '-')+'</td>'+
         '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(alias || '-')+'</td>'+
         '<td style="padding:8px 12px;font-size:13px;color:var(--card-fg);">'+(wxid || '-')+'</td>'+
-        '<td style="padding:8px 12px;">'+
+        '<td style="padding:8px 12px;white-space:nowrap;">'+badgeHtml+
           '<button type="button" class="btn-add" style="padding:4px 8px;font-size:12px;" onclick="window.viewContactMessages(\''+wxid+'\', \''+remark.replace(/'/g, "\\'")+'\', \''+nickname.replace(/'/g, "\\'")+'\')">查看消息</button>'+
         '</td></tr>';
     });
@@ -5917,18 +6471,82 @@ function renderContactChatMessages(messages){
   messages.forEach(function(msg){
     var isSelf = msg.attr === 'self';
     var timeStr = formatMessageTime(msg.time);
+    var isUnread = !!msg.unread;
+    var isPending = !!msg.needs_confirm && msg.confirm_status === 'pending';
+    var msgId = msg.message_id || '';
+    var flagHtml = '';
+    if(isUnread){
+      flagHtml += '<span style="display:inline-block;padding:0 6px;border-radius:8px;font-size:10px;background:#FFEBEE;color:#C62828;margin-left:4px;">未读</span>';
+    }
+    if(isPending){
+      flagHtml += '<span style="display:inline-block;padding:0 6px;border-radius:8px;font-size:10px;background:#FFF3E0;color:#E65100;margin-left:4px;">待确认</span>';
+    }
+    var actionHtml = '';
+    if(isPending && msgId){
+      actionHtml = '<div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;">'+
+        '<button type="button" style="padding:3px 10px;font-size:11px;background:#f2f2f2;color:#666;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;" onclick="rejectContactMessage(\''+msgId+'\')">拒绝</button>'+
+        '<button type="button" style="padding:3px 10px;font-size:11px;background:#3b82f6;color:#fff;border:none;border-radius:6px;cursor:pointer;" onclick="confirmContactMessage(\''+msgId+'\')">确认回复</button>'+
+        '</div>';
+    }
     html += '<div style="display:flex;margin-bottom:16px;'+(isSelf?'justify-content:flex-end':'justify-content:flex-start')+';">'+
       '<div style="display:flex;flex-direction:column;align-items:'+(isSelf?'flex-end':'flex-start')+';max-width:75%;">'+
       '<div style="padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.6;'+
       (isSelf?'background:#3b82f6;color:white;border-bottom-right-radius:6px;':'background:white;color:#111827;border-bottom-left-radius:6px;border:1px solid #e5e7eb;box-shadow:0 1px 2px rgba(0,0,0,0.05);')+'">'+
       $('<span>').text(msg.content).html()+
       '</div>'+
-      '<div style="font-size:11px;color:#9ca3af;margin-top:4px;padding:0 6px;">'+timeStr+'</div>'+
+      '<div style="font-size:11px;color:#9ca3af;margin-top:4px;padding:0 6px;">'+timeStr+flagHtml+'</div>'+
+      actionHtml+
       '</div>'+
       '</div>';
   });
   $('#contact-chat-messages').html(html || '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px;">暂无消息记录</div>');
   $('#contact-chat-messages').scrollTop($('#contact-chat-messages')[0].scrollHeight);
+}
+
+function confirmContactMessage(msgId){
+  var chatName = window._currentChatName;
+  if(!chatName || !msgId) return;
+  $.ajax({
+    url: '/api/messages/confirm',
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({chat_name: chatName, message_id: msgId}),
+    success: function(res){
+      if(res.code === 0){
+        svModal.success('消息已确认，回复已发送', '操作成功');
+        loadContactMessages();
+        refreshContacts(true);
+      } else {
+        svModal.error(res.message || '确认失败', '操作失败');
+      }
+    },
+    error: function(xhr){
+      svModal.error(xhr.responseJSON && xhr.responseJSON.message || ('请求失败 HTTP ' + xhr.status), '操作失败');
+    }
+  });
+}
+
+function rejectContactMessage(msgId){
+  var chatName = window._currentChatName;
+  if(!chatName || !msgId) return;
+  $.ajax({
+    url: '/api/messages/reject',
+    method: 'POST',
+    contentType: 'application/json',
+    data: JSON.stringify({chat_name: chatName, message_id: msgId}),
+    success: function(res){
+      if(res.code === 0){
+        svModal.success('消息已拒绝', '操作成功');
+        loadContactMessages();
+        refreshContacts(true);
+      } else {
+        svModal.error(res.message || '拒绝失败', '操作失败');
+      }
+    },
+    error: function(xhr){
+      svModal.error(xhr.responseJSON && xhr.responseJSON.message || ('请求失败 HTTP ' + xhr.status), '操作失败');
+    }
+  });
 }
 
 function getTimeValue(timeStr){
@@ -5940,6 +6558,10 @@ function getTimeValue(timeStr){
       return timestamp * 1000;
     }
     return timestamp;
+  }
+  if(timeStr.includes('T')){
+    var isoTime = new Date(timeStr).getTime();
+    if(!isNaN(isoTime)) return isoTime;
   }
   if(timeStr.includes('/') || timeStr.includes('-')){
     var parts = timeStr.split(' ');
@@ -5977,6 +6599,12 @@ function formatMessageTime(timeStr){
       return (date.getMonth()+1)+'/'+date.getDate()+' '+date.getHours().toString().padStart(2,'0')+':'+date.getMinutes().toString().padStart(2,'0');
     }
     return '-';
+  }
+  if(timeStr.includes('T')){
+    var isoDate = new Date(timeStr);
+    if(!isNaN(isoDate.getTime())){
+      return (isoDate.getMonth()+1)+'/'+isoDate.getDate()+' '+isoDate.getHours().toString().padStart(2,'0')+':'+isoDate.getMinutes().toString().padStart(2,'0');
+    }
   }
   if(timeStr.includes('/') || timeStr.includes('-')){
     var parts = timeStr.split(' ');
@@ -6031,17 +6659,7 @@ function sendContactChatMessage(){
 window.viewContactMessages = viewContactMessages;
 
 $('#btn-contact-search').click(function(){
-  var keyword = $('#contact-search-input').val().trim().toLowerCase();
-  if(!keyword){
-    renderContactsList(contactsList);
-    return;
-  }
-  var filtered = contactsList.filter(function(c){
-    return (c.remark || '').toLowerCase().indexOf(keyword) !== -1 ||
-           (c.nickname || '').toLowerCase().indexOf(keyword) !== -1 ||
-           (c.wxid || '').toLowerCase().indexOf(keyword) !== -1;
-  });
-  renderContactsList(filtered);
+  renderContactListWithFilter();
 });
 
 $('#btn-refresh-contacts').click(refreshContacts);
@@ -6060,9 +6678,14 @@ $(document).on('click', '[data-tab="tab-messages"]', function(){
   triggerMessagesPolling(true);
 });
 
+$(document).on('click', '[data-tab="tab-deal"]', function(){
+  triggerDealPolling(true);
+});
+
 function syncCustomPolling(activeTabId){
   syncTasksPolling(false);
   syncMessagesPolling(false);
+  syncDealPolling(false);
 }
 
 $(function(){

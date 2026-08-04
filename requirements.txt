@@ -7,3 +7,8 @@ schedule
 cozepy
 websockets
 redis
+
+httpx
+httpx-sse
+pydantic
+strenum

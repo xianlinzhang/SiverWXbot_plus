@@ -19,6 +19,29 @@ def get_contacts():
             return jsonify({"code": 400, "message": "机器人未启动或未开启 Chatlog 模式", "data": None}), 400
         contacts_result = ws.bot.chatlog_client.search_contact(is_friend=1)
         contacts = contacts_result.get("items", []) if isinstance(contacts_result, dict) else []
+
+        stats = {}
+        if hasattr(ws.bot, "message_store") and ws.bot.message_store:
+            try:
+                stats = ws.bot.message_store.get_chat_action_stats() or {}
+            except Exception as e:
+                ws.log("WARNING", f"获取会话操作统计失败: {e}")
+
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+            unread, pending = _contact_action_counts(contact, stats)
+            contact["unread_count"] = unread
+            contact["pending_count"] = pending
+            contact["has_action"] = bool(unread or pending)
+
+        # 有未读/待操作的联系人置顶，内部按待操作数、未读数降序
+        contacts.sort(key=lambda c: (
+            0 if not isinstance(c, dict) or not c.get("has_action") else 1,
+            c.get("pending_count", 0) if isinstance(c, dict) else 0,
+            c.get("unread_count", 0) if isinstance(c, dict) else 0,
+        ), reverse=True)
+
         total = len(contacts)
         friends = sum(1 for c in contacts if isinstance(c, dict) and c.get("type") == "friend")
         groups = sum(1 for c in contacts if isinstance(c, dict) and c.get("type") == "group")
@@ -29,6 +52,16 @@ def get_contacts():
     except Exception as e:
         ws.log("ERROR", f"获取联系人管理完整信息失败: {e}")
         return jsonify({"code": 500, "message": str(e), "data": None}), 500
+
+
+def _contact_action_counts(contact, stats):
+    """按 备注名/昵称/wxid/微信号 依次匹配存储层的会话操作统计，取首个命中项"""
+    for field in ("remark", "nickName", "userName", "alias"):
+        val = (contact.get(field) or "").strip()
+        if val and val in stats:
+            s = stats[val]
+            return s.get("unread", 0), s.get("pending", 0)
+    return 0, 0
 
 
 @bp.route("/api/contacts/list", methods=["GET"])

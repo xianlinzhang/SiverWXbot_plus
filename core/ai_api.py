@@ -2,6 +2,7 @@ import os
 import json
 import time
 import base64
+import hashlib
 import mimetypes
 import requests
 from openai import OpenAI
@@ -12,6 +13,7 @@ from cozepy import COZE_CN_BASE_URL
 from logger import log
 
 from core._version import version
+from core.dify_client import Client
 
 
 class OpenAIAPI:
@@ -62,7 +64,7 @@ class OpenAIAPI:
         }
 
     def chat(self, message, model=None, stream=False, prompt=None, history=None,
-             image_path: str = "", image_url: str = ""):
+             image_path: str = "", image_url: str = "", user_key=None):
         """
         调用 OpenAI 兼容接口获取 AI 回复。
 
@@ -211,21 +213,212 @@ class OpenAIAPI:
 class DifyAPI:
     """
     Dify 平台 API 封装类
-    通过 HTTP 请求调用 Dify 对话工作流接口。
+    基于 core.dify_client（官方类型化客户端）调用自部署/云端的 Dify。
+    支持 chat（Chat App / Chatflow，真实服务端会话）与 workflow（Workflow App）两类应用。
     """
+
+    _KNOWN_ENDPOINTS = ("/chat-messages", "/completion-messages", "/workflows/run")
 
     def __init__(self, config):
         self.config = config
-        self.DS_NOW_MOD = config.model1
-        self.api_key = "Bearer " + config.api_key
-        self.base_url = config.base_url
+        self.DS_NOW_MOD = getattr(config, 'model1', '')
+        self.api_key = getattr(config, 'api_key', '')
+        self.base_url = (getattr(config, 'base_url', '') or '').strip()
+        self.app_type = getattr(config, 'app_type', 'chat') or 'chat'
+        self.workflow_input_key = getattr(config, 'workflow_input_key', 'query') or 'query'
+        self.workflow_output_key = getattr(config, 'workflow_output_key', 'text') or 'text'
+        self.api_base = self._resolve_api_base(self.base_url)
+        self.client = Client(
+            api_key=self.api_key,
+            api_base=self.api_base,
+        )
+        self.request_timeout = max(5, int(getattr(config, 'ai_request_timeout', 120)))
+        self._redis = None
 
-    def chat(self, message, model=None, stream=True, prompt=None, history=None):
+    @classmethod
+    def _resolve_api_base(cls, base_url):
         """
-        调用 Dify 对话接口，返回 AI 回复文本。
+        从完整端点地址解析出 Dify 服务根地址（api_base）。
+        base_url 可能带 /chat-messages 等端点尾缀、尾斜杠或 query 参数。
+        """
+        if not base_url:
+            return base_url
+        # 去除 query / fragment
+        if '?' in base_url or '#' in base_url:
+            base_url = base_url.split('?', 1)[0].split('#', 1)[0]
+        base_url = base_url.rstrip('/')
+        # 剥掉已知端点尾缀
+        for ep in cls._KNOWN_ENDPOINTS:
+            if base_url.endswith(ep):
+                base_url = base_url[: -len(ep)].rstrip('/')
+                break
+        return base_url
+
+    def _get_redis(self):
+        """惰性创建 RedisManager（message_store 模式），受 redis_enabled 开关控制。"""
+        if self._redis is not None:
+            return self._redis
+        self._redis = False
+        try:
+            if not getattr(self.config, 'redis_enabled', False):
+                return False
+            from core.redis_manager import RedisManager
+            redis_config = {
+                'host': getattr(self.config, 'redis_host', 'localhost'),
+                'port': getattr(self.config, 'redis_port', 6379),
+                'db': getattr(self.config, 'redis_db', 0),
+                'password': getattr(self.config, 'redis_password', None),
+                'timeout': getattr(self.config, 'redis_timeout', 5),
+                'retry_count': getattr(self.config, 'redis_retry_count', 3),
+                'fallback': getattr(self.config, 'redis_fallback', True),
+                'fallback_path': getattr(self.config, 'redis_fallback_path', './fallback_redis.json'),
+            }
+            self._redis = RedisManager(redis_config)
+        except Exception as e:
+            log(level="WARN", message=f"Dify 会话存储初始化失败，本次不续会话: {e}")
+            self._redis = False
+        return self._redis
+
+    def _conv_redis_key(self, user_key):
+        return "dify:conv:" + hashlib.md5(
+            f"{self.api_base}|{self.api_key}".encode('utf-8')
+        ).hexdigest() + ":" + str(user_key)
+
+    def _dify_user(self, user_key):
+        return f"wxbot_{hashlib.md5(str(user_key).encode('utf-8')).hexdigest()[:12]}"
+
+    def _resolve_conv_id(self, user_key):
+        """读取该会话已持久化的 conversation_id；无会话/不可用返回空串。"""
+        if not user_key:
+            return ""
+        redis = self._get_redis()
+        if not redis:
+            return ""
+        try:
+            value = redis.get(self._conv_redis_key(user_key))
+            return str(value) if value else ""
+        except Exception as e:
+            log(level="WARN", message=f"Dify 读取会话失败: {e}")
+            return ""
+
+    def _save_conv_id(self, user_key, conversation_id):
+        """持久化 conversation_id；无会话/不可用静默跳过，不影响回复。"""
+        if not user_key or not conversation_id:
+            return
+        redis = self._get_redis()
+        if not redis:
+            return
+        try:
+            redis.set(self._conv_redis_key(user_key), conversation_id)
+        except Exception as e:
+            log(level="WARN", message=f"Dify 保存会话失败: {e}")
+
+    def _chat_chatflow(self, query, user_key=None):
+        """chat 型：真实服务端会话（conversation_id 持久化复用）。"""
+        from core.dify_client.models import ChatRequest, ResponseMode
+
+        conversation_id = self._resolve_conv_id(user_key)
+        req = ChatRequest(
+            query=query,
+            response_mode=ResponseMode.BLOCKING,
+            user=self._dify_user(user_key or "default"),
+            conversation_id=conversation_id or "",
+        )
+        resp = self.client.chat_messages(req, timeout=self.request_timeout)
+        if resp.conversation_id:
+            self._save_conv_id(user_key, resp.conversation_id)
+        return resp.answer
+
+    def _chat_workflow(self, message, prompt=None, user_key=None, model=None, history=None):
+        """
+        workflow 型：入参按 workflow_input_key 键值映射传入，出参按 workflow_output_key 提取。
+        workflow_input_key 支持多键映射，如 "msgs=$message,prompt=$prompt"；
+        占位符见 _build_workflow_inputs。未用占位符则取值原样。
+        """
+        from core.dify_client.models import ResponseMode, WorkflowsRunRequest
+
+        inputs = self._build_workflow_inputs(message, prompt, user_key=user_key, model=model, history=history)
+        req = WorkflowsRunRequest(
+            inputs=inputs,
+            response_mode=ResponseMode.BLOCKING,
+            user=self._dify_user(user_key or "default"),
+        )
+        resp = self.client.run_workflows(req, timeout=self.request_timeout)
+        outputs = resp.data.outputs or {} if resp.data else {}
+        value = outputs.get(self.workflow_output_key)
+        if value is None:
+            raise ValueError(
+                f"工作流输出缺少变量 [{self.workflow_output_key}]，可用输出: {list(outputs.keys())}"
+            )
+        text = str(value)
+        if not text.strip():
+            raise ValueError(f"工作流输出变量 [{self.workflow_output_key}] 为空")
+        return text
+
+    def _build_workflow_inputs(self, message, prompt=None, user_key=None, model=None, history=None):
+        """
+        解析 workflow_input_key 键值映射并填充 inputs。
+
+        格式：以逗号分隔的 key=value 对；value 支持占位符：
+          $message  - 用户消息
+          $prompt   - 提示词（chat() 的 prompt 实参）
+          $model    - 模型名（可能为空）
+          $user_key - 会话身份（如微信 chat_name，可能为空）
+          $history  - 历史消息（渲染为 "角色: 内容" 多行文本，可能为空）
+          $time     - 当前时间 YYYY-MM-DD HH:MM:SS
+          $date     - 当前日期 YYYY-MM-DD
+        例如 "msgs=$message,prompt=$prompt"。未用占位符则取值原样。
+        解析结果为空时退化为 {"query": message}，保持向后兼容。
+        """
+        import time as _time
+
+        spec = (self.workflow_input_key or "query").strip()
+        inputs = {}
+        now = _time.localtime()
+        for pair in spec.split(","):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            key, value = pair.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if "$message" in value:
+                value = value.replace("$message", message)
+            if "$prompt" in value:
+                value = value.replace("$prompt", prompt or "")
+            if "$model" in value:
+                value = value.replace("$model", model or "")
+            if "$user_key" in value:
+                value = value.replace("$user_key", user_key or "")
+            if "$history" in value:
+                value = value.replace("$history", self._render_workflow_history(history))
+            if "$time" in value:
+                value = value.replace("$time", _time.strftime("%Y-%m-%d %H:%M:%S", now))
+            if "$date" in value:
+                value = value.replace("$date", _time.strftime("%Y-%m-%d", now))
+            inputs[key] = value
+        if not inputs:
+            inputs[self.workflow_input_key or "query"] = message
+        return inputs
+
+    def _render_workflow_history(self, history):
+        """把 history 渲染为多行文本（复用 chat() 的拼接风格）。"""
+        if not history:
+            return ""
+        return "\n".join([
+            f"[{h.get('time', '')}] {'助手' if h.get('attr') == 'self' else h.get('sender', '用户')}: {h.get('content', '')}"
+            for h in history
+        ])
+
+    def chat(self, message, model=None, stream=True, prompt=None, history=None, user_key=None):
+        """
+        调用 Dify 接口，返回 AI 回复文本。
 
         :param message: 用户输入内容
-        :param history: 历史消息列表（Dify 不支持多轮消息，拼接为上下文前缀）
+        :param history: 历史消息列表（拼接为上下文前缀，行为与重构前一致）
+        :param user_key: 会话身份标识（如微信 chat_name），用于 conversation_id 隔离持久化
         :return:        AI 回复字符串
         """
         query = message
@@ -235,105 +428,17 @@ class DifyAPI:
                 for h in history
             ])
             query = f"[历史对话]\n{ctx}\n[当前消息]\n{message}"
-        response = self.run_dify_conversation(
-            query=query,
-            response_mode="blocking",
-        )
-
-        if "event" in response and response["event"] == "message":
-            result = self.handle_blocking_response(response)
-            log(message=f"🤖 AI回复: {result['answer']}")
-            log(message=f"会话ID: {result['conversation_id']}")
-            return result['answer']
-        else:
-            log(level="ERROR", message=f"❌ 错误: {response.get('error', 'Unknown error')}")
-            return "API返回错误，请稍后再试"
-
-    def handle_blocking_response(self, response_data):
-        """
-        解析阻塞模式（blocking）的 Dify API 响应。
-
-        :param response_data: Dify 返回的 JSON 数据字典
-        :return:              包含 success、answer 等字段的结果字典
-        """
-        if response_data.get("event") == "message":
-            return {
-                "success": True,
-                "conversation_id":   response_data.get("conversation_id"),
-                "answer":            response_data.get("answer", ""),
-                "message_id":        response_data.get("message_id"),
-                "metadata":          response_data.get("metadata", {}),
-                "usage":             response_data.get("usage", {}),
-                "retriever_resources": response_data.get("retriever_resources", []),
-            }
-        else:
-            return {
-                "success": False,
-                "error":        f"Unexpected event type: {response_data.get('event')}",
-                "raw_response": response_data,
-            }
-
-    def run_dify_conversation(
-        self,
-        query=str,
-        inputs={},
-        conversation_id=None,
-        files=[],
-        auto_generate_name=True,
-        response_mode="blocking",
-    ):
-        """
-        执行 Dify 对话工作流 API 请求。
-        官方文档：https://docs.dify.ai/api/chat-messages
-
-        :param query:               用户输入/提问内容
-        :param inputs:              App 中定义的变量值
-        :param conversation_id:     会话 ID（多轮对话时传入）
-        :param files:               文件列表（支持 Vision 能力时使用）
-        :param auto_generate_name:  是否自动生成对话标题
-        :param response_mode:       响应模式（blocking / streaming）
-        :return:                    API 响应数据字典
-        """
-        url = self.base_url
-        headers = {
-            "Authorization": self.api_key,
-            "Content-Type":  "application/json",
-        }
-        payload = {
-            "inputs":             inputs,
-            "query":              query,
-            "response_mode":      response_mode,
-            "user":               "api-user",
-            "conversation_id":    conversation_id,
-            "auto_generate_name": auto_generate_name,
-        }
-
-        if files:
-            payload["files"] = files
 
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=120)
-            response.raise_for_status()
-            if response_mode == "blocking":
-                return response.json()
+            if self.app_type == "workflow":
+                result = self._chat_workflow(message, prompt=prompt, user_key=user_key, model=model, history=history)
             else:
-                return {"raw_stream": response.text}
-        except requests.exceptions.RequestException as e:
-            error_info = {
-                "error_type": "request_error",
-                "message":    str(e),
-            }
-            if e.response is not None:
-                try:
-                    error_data = e.response.json()
-                    error_info.update({
-                        "status_code": e.response.status_code,
-                        "error_code":  error_data.get("code", "unknown"),
-                        "api_message": error_data.get("message", "No error details"),
-                    })
-                except Exception:
-                    error_info["response_text"] = e.response.text
-            return {"success": False, "error": error_info}
+                result = self._chat_chatflow(query, user_key=user_key)
+            log(message=f"AI回复: {result[:100]}")
+            return result
+        except Exception as e:
+            log(level="ERROR", message=f"Dify API 调用失败 [{type(e).__name__}]: {str(e)}")
+            return "API返回错误，请稍后再试"
 
 
 class CozeAPI:
@@ -354,7 +459,7 @@ class CozeAPI:
             base_url=self.base_url,
         )
 
-    def chat(self, message, model=None, stream=True, prompt=None, history=None):
+    def chat(self, message, model=None, stream=True, prompt=None, history=None, user_key=None):
         """
         调用扣子流式接口获取 AI 回复，并拼接完整的回答文本。
 
@@ -598,7 +703,7 @@ class DusAPI:
         return "".join(result_parts)
 
     def chat(self, message, model=None, stream=True, prompt=None, history=None,
-             image_path: str = "", image_url: str = ""):
+             image_path: str = "", image_url: str = "", user_key=None):
         """
         发送消息并返回回复文本。
         :param image_path: 本地图片路径，优先于 image_url

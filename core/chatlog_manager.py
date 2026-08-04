@@ -392,7 +392,8 @@ class ChatlogManager:
                         f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                         prompt=_effective_group_prompt,
                         history=history,
-                        image_path=msg.content
+                        image_path=msg.content,
+                        user_key=chat_name
                     )
                 elif '+引用的图片:' in content_without_at:
                     text_part, img_path = content_without_at.split('+引用的图片:', 1)
@@ -401,22 +402,22 @@ class ChatlogManager:
                         f"{msg.sender}: {text_part.strip()}" if text_part.strip() else f"{msg.sender}: [这是 {msg.sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]",
                         prompt=_effective_group_prompt,
                         history=history,
-                        image_path=img_path.strip()
+                        image_path=img_path.strip(),
+                        user_key=chat_name
                     )
                 else:
                     group_api = self.bot._get_group_api(chat_name)
-                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history, user_key=chat_name)
             else:
                 group_api = self.bot._get_group_api(chat_name)
-                reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history, user_key=chat_name)
         except Exception as e:
             log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
-            reply = self.config.api_error_reply
+            return
 
-        if reply == "API返回错误，请稍后再试":
-            reply = self.config.api_error_reply
-        else:
-            reply = self.bot._clean_reply_for_send(reply)
+        reply = self.bot._clean_reply_for_send(reply)
+        if not reply:
+            return
 
         if self.config.group_split_reply_switch:
             parts = self.bot._parse_split_reply(reply, self.config.group_split_max_count)

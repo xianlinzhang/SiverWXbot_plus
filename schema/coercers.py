@@ -53,6 +53,10 @@ FIELD_HANDLERS = {
     'api_error_reply_once': 'bool',
     'chat_max_round_switch': 'bool',
     'chat_max_round_reply_once': 'bool',
+    'chat_reply_confirm_switch': 'bool',
+    'deal_queue_consumer_switch': 'bool',
+    'deal_queue_auto_approve_switch': 'bool',
+    'moments_wait_mouse_idle_switch': 'bool',
 
     # ---------- 列表 ----------
     'listen_list': 'list',
@@ -67,12 +71,16 @@ FIELD_HANDLERS = {
 
     # ---------- 浮点区间 ----------
     'group_welcome_random': ('float', 0.0, 1.0, 1.0),
+    'moments_mouse_idle_seconds': ('float', 0.5, 60, 2),
+    'moments_mouse_max_wait_seconds': ('float', 1, 600, 60),
 
     # ---------- 整型区间 ----------
     'new_friend_check_min': ('int', 60, 3600, 60),
     'new_friend_check_max': ('int', 60, 3600, 300),
     'chat_max_round_default': ('int', 1, 99999, 99),
     'chat_max_round_reset_days': ('int', 0, 365, 0),
+    'chat_reply_confirm_wait_timeout': ('int', 1, 3600, 300),
+    'ai_request_timeout': ('int', 5, 600, 120),
 
     # ---------- 字典 ----------
     'keyword_dict': 'dict_keywords',

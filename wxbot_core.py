@@ -46,6 +46,7 @@ from core.wx_utils import WXUtils
 from core.message_store import MessageStore
 from core.redis_manager import RedisManager
 from core.task_queue import TaskQueue
+from core.deal_queue_consumer import DealQueueConsumer
 from core.ai_worker import AIWorker
 
 # ============================================================
@@ -150,6 +151,9 @@ class WXBot:
         # 任务队列（需要 bot.redis_manager）
         self.task_queue = TaskQueue(self)
 
+        # 同城信息队列消费者（需要 bot.redis_manager，不自动启动线程）
+        self.deal_consumer = DealQueueConsumer(self)
+
         # AI 回复工作线程（方案 A：单 worker 串行，AI 生成从主线程解耦）
         self.ai_worker = AIWorker()
         # 统计计数线程安全（主循环 / task_queue 回调 / ai_worker / 群组路径多线程触碰）
@@ -197,6 +201,19 @@ class WXBot:
         tmp.base_url = cfg.get('url', '')
         tmp.model1   = cfg.get('model', '')
         tmp.prompt   = ''   # prompt 总是通过 chat() 调用时显式传入，此处置空
+        tmp.app_type = cfg.get('app_type', 'chat')
+        tmp.workflow_input_key = cfg.get('workflow_input_key', 'query')
+        tmp.workflow_output_key = cfg.get('workflow_output_key', 'text')
+        tmp.ai_request_timeout = self.config.ai_request_timeout
+        tmp.redis_enabled = self.config.redis_enabled
+        tmp.redis_host = self.config.redis_host
+        tmp.redis_port = self.config.redis_port
+        tmp.redis_db = self.config.redis_db
+        tmp.redis_password = self.config.redis_password
+        tmp.redis_timeout = self.config.redis_timeout
+        tmp.redis_retry_count = self.config.redis_retry_count
+        tmp.redis_fallback = self.config.redis_fallback
+        tmp.redis_fallback_path = self.config.redis_fallback_path
 
         log(message=f"初始化群组专属接口：索引{idx}  SDK:{sdk}  模型:{tmp.model1}")
         if sdk == "Dify":
@@ -323,6 +340,8 @@ class WXBot:
                 self.task_queue.stop()
             if hasattr(self, 'ai_worker') and self.ai_worker:
                 self.ai_worker.stop()
+            if hasattr(self, 'deal_consumer') and self.deal_consumer:
+                self.deal_consumer.stop()
             if hasattr(self, 'redis_manager') and self.redis_manager:
                 self.redis_manager.close()
             log(level="WARNING", message='siver_wxbot安全退出！！')
@@ -464,6 +483,12 @@ class WXBot:
                         self._moments_like_next_time = None  # 执行后重置，下次循环重新生成间隔
                 else:
                     self._moments_like_next_time = None  # 开关关闭时重置计时器
+
+                # ---- 同城信息队列消费者 ----
+                try:
+                    self.deal_consumer.check()
+                except Exception as e:
+                    log(level="ERROR", message=f"同城信息消费者模块出错：{e}")
 
             except Exception as e:
                 self.is_err(

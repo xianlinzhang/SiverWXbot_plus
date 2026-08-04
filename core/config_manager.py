@@ -103,6 +103,27 @@ class WXBotConfig:
         self.random_moments_switch = False  # 随机定时朋友圈总开关
         self.random_moments_list   = []     # 随机定时朋友圈任务列表
 
+        # ---------- 朋友圈发布鼠标空闲检测 ----------
+        self.moments_wait_mouse_idle_switch = True   # 发布前等鼠标空闲开关
+        self.moments_mouse_idle_seconds     = 2      # 鼠标需持续空闲秒数
+        self.moments_mouse_max_wait_seconds = 60     # 最多等待秒数（超时放弃发布）
+
+        # ---------- 同城信息消费（deal queue）配置 ----------
+        self.deal_queue_consumer_switch = False          # 同城信息消费者总开关
+        self.deal_queue_redis_host      = '122.51.49.63' # 远程队列 Redis 主机
+        self.deal_queue_redis_port      = 6379           # 远程队列 Redis 端口
+        self.deal_queue_redis_db        = 0              # 远程队列 Redis db
+        self.deal_queue_redis_password  = ''             # 远程队列 Redis 密码
+        self.deal_queue_poll_interval   = 5              # 轮询间隔（秒）
+        self.deal_queue_privacy         = 'public'       # 朋友圈可见范围
+        self.deal_queue_moments_prefix  = ''             # 朋友圈文案前缀
+        self.deal_queue_moments_max_len = 2000           # 文案截断长度
+        self.deal_queue_pending_max     = 500            # 待发布池上限
+        self.deal_queue_auto_approve_switch    = False   # 自动审核发布总开关（纯放行）
+        self.deal_queue_auto_approve_delay     = 60      # 入池后自动发布延迟（秒）
+        self.deal_queue_publish_interval_min   = 300     # 自动发布间隔下限（秒）
+        self.deal_queue_publish_interval_max   = 600     # 自动发布间隔上限（秒）
+
         # ---------- 对话记忆配置 ----------
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_max_count     = 3000     # 单窗口最多存储条数（上限 5000）
@@ -122,6 +143,7 @@ class WXBotConfig:
         self.chatlog_polling_interval = 10*60                           # Chatlog 轮询间隔（秒）
         self.chatlog_context_count = 20                                # Chatlog 上下文拉取条数
         self.chatlog_request_timeout = 5                               # Chatlog 请求超时时间（秒）
+        self.ai_request_timeout = 120                                  # AI 接口请求超时时间（秒，Dify/Coze 等慢模型）
         self.chatlog_message_refresh_days = 30                         # Chatlog 消息刷新拉取天数
         self.chatlog_message_refresh_limit = 500                       # Chatlog 消息刷新拉取条数上限
         self.chatlog_message_auto_refresh = True                       # Chatlog 监听循环自动刷新消息开关
@@ -145,11 +167,15 @@ class WXBotConfig:
         self.redis_timeout = 5                                         # Redis 连接超时时间（秒）
         self.redis_retry_count = 3                                     # 连接重试次数
         self.redis_fallback = True                                     # Redis 不可用时是否降级到本地存储
+        self.redis_fallback_path = './fallback_redis.json'             # Redis 降级本地存储文件
 
         # ---------- 任务队列配置 ----------
         self.task_queue_enabled = True                                 # 任务队列总开关
         self.task_queue_max_pending = 1000                             # 最大待执行任务数
         self.task_queue_history_limit = 500                            # 任务历史保留条数
+        self.task_queue_max_retries = 3                                # 任务最大重试次数（0=不重试）
+        self.task_queue_retry_interval = 30                            # 首次重试间隔（秒）
+        self.task_queue_retry_factor = 2                               # 重试间隔递增倍数（指数退避）
 
         # 初始化时自动加载配置并同步到属性
         self.load_config()
@@ -233,6 +259,9 @@ class WXBotConfig:
                     "moments_like_max": 120,
                     "random_moments_switch": False,
                     "random_moments_list": [],
+                    "moments_wait_mouse_idle_switch": True,
+                    "moments_mouse_idle_seconds": 2,
+                    "moments_mouse_max_wait_seconds": 60,
                     "everyday_start_stop_bot_switch": False,
                     "everyday_start_bot_time": "08:00",
                     "everyday_stop_bot_time": "23:00",
@@ -282,6 +311,7 @@ class WXBotConfig:
                     "chatlog_polling_interval": 3,
                     "chatlog_context_count": 20,
                     "chatlog_request_timeout": 5,
+                    "ai_request_timeout": 120,
                     "chatlog_reply_delay": 60,
                     "chat_reply_confirm_switch": False,
                     "chat_reply_confirm_wait_timeout": 300,
@@ -299,6 +329,9 @@ class WXBotConfig:
                     "task_queue_enabled": True,
                     "task_queue_max_pending": 1000,
                     "task_queue_history_limit": 500,
+                    "task_queue_max_retries": 3,
+                    "task_queue_retry_interval": 30,
+                    "task_queue_retry_factor": 2,
                 }
                 with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
                     json.dump(base_config, f, ensure_ascii=False, indent=4)
@@ -406,12 +439,23 @@ class WXBotConfig:
         if self.api_index >= len(self.api_configs):
             self.api_index = 0
 
+        # Dify 接口新增字段迁移（纯增量，setdefault 兜底）
+        for _cfg in self.api_configs:
+            if not isinstance(_cfg, dict):
+                continue
+            _cfg.setdefault('app_type', 'chat')
+            _cfg.setdefault('workflow_input_key', 'query')
+            _cfg.setdefault('workflow_output_key', 'text')
+
         # 从当前接口配置派生兼容属性（供 AI 接口类使用）
         _cur = self.api_configs[self.api_index] if self.api_configs else {}
         self.api_sdk  = _cur.get('sdk', '')
         self.api_key  = _cur.get('key', '')
         self.base_url = _cur.get('url', '')
         self.model1   = _cur.get('model', '')
+        self.app_type             = _cur.get('app_type', 'chat')
+        self.workflow_input_key   = _cur.get('workflow_input_key', 'query')
+        self.workflow_output_key  = _cur.get('workflow_output_key', 'text')
         self.prompt   = self.config.get('prompt', "")
 
         # 微信基础配置
@@ -473,6 +517,29 @@ class WXBotConfig:
         # 随机定时朋友圈配置
         self.random_moments_switch = self.config.get('random_moments_switch', False)
         self.random_moments_list   = self.config.get('random_moments_list', [])
+
+        # 朋友圈发布前鼠标空闲检测（避免与真人鼠标操作争抢）
+        self.moments_wait_mouse_idle_switch = bool(self.config.get('moments_wait_mouse_idle_switch', True))
+        self.moments_mouse_idle_seconds     = max(0.5, float(self.config.get('moments_mouse_idle_seconds', 2)))
+        self.moments_mouse_max_wait_seconds = max(self.moments_mouse_idle_seconds, float(self.config.get('moments_mouse_max_wait_seconds', 60)))
+
+        # 同城信息消费（deal queue）配置
+        self.deal_queue_consumer_switch = bool(self.config.get('deal_queue_consumer_switch', False))
+        self.deal_queue_redis_host      = str(self.config.get('deal_queue_redis_host', '122.51.49.63'))
+        self.deal_queue_redis_port      = max(1, int(self.config.get('deal_queue_redis_port', 6379)))
+        self.deal_queue_redis_db        = max(0, int(self.config.get('deal_queue_redis_db', 0)))
+        self.deal_queue_redis_password  = self.config.get('deal_queue_redis_password', '')
+        self.deal_queue_poll_interval   = self._coerce_int_range(self.config.get('deal_queue_poll_interval', 5), 5, 2, 600)
+        self.deal_queue_privacy         = self.config.get('deal_queue_privacy', 'public')
+        self.deal_queue_moments_prefix  = self.config.get('deal_queue_moments_prefix', '')
+        self.deal_queue_moments_max_len = self._coerce_int_range(self.config.get('deal_queue_moments_max_len', 2000), 2000, 100, 2000)
+        self.deal_queue_pending_max     = self._coerce_int_range(self.config.get('deal_queue_pending_max', 500), 500, 1, 10000)
+        self.deal_queue_auto_approve_switch  = bool(self.config.get('deal_queue_auto_approve_switch', False))
+        self.deal_queue_auto_approve_delay   = self._coerce_int_range(self.config.get('deal_queue_auto_approve_delay', 60), 60, 0, 86400)
+        self.deal_queue_publish_interval_min = self._coerce_int_range(self.config.get('deal_queue_publish_interval_min', 300), 300, 1, 86400)
+        self.deal_queue_publish_interval_max = self._coerce_int_range(self.config.get('deal_queue_publish_interval_max', 600), 600, 1, 86400)
+        if self.deal_queue_publish_interval_max < self.deal_queue_publish_interval_min:
+            self.deal_queue_publish_interval_max = self.deal_queue_publish_interval_min
 
         # 旧配置自动迁移：everyday_msg_dict -> scheduled_msg_list
         if not self.scheduled_msg_list and self.config.get('everyday_msg_dict'):
@@ -613,6 +680,7 @@ class WXBotConfig:
         self.chatlog_polling_interval = max(1, int(self.config.get('chatlog_polling_interval', 3)))
         self.chatlog_context_count = max(1, int(self.config.get('chatlog_context_count', 20)))
         self.chatlog_request_timeout = max(1, int(self.config.get('chatlog_request_timeout', 5)))
+        self.ai_request_timeout = max(5, int(self.config.get('ai_request_timeout', 120)))
         self.chatlog_reply_delay = int(self.config.get('chatlog_reply_delay', 0))
         self.chatlog_message_refresh_days = max(1, int(self.config.get('chatlog_message_refresh_days', 30)))
         self.chatlog_message_refresh_limit = max(1, int(self.config.get('chatlog_message_refresh_limit', 500)))
@@ -638,6 +706,7 @@ class WXBotConfig:
             'redis_timeout': 5,
             'redis_retry_count': 3,
             'redis_fallback': True,
+            'redis_fallback_path': './fallback_redis.json',
         }
         _redis_needs_save = any(k not in self.config for k in _redis_defaults)
         for k, v in _redis_defaults.items():
@@ -653,12 +722,16 @@ class WXBotConfig:
         self.redis_timeout = max(1, int(self.config.get('redis_timeout', 5)))
         self.redis_retry_count = max(1, int(self.config.get('redis_retry_count', 3)))
         self.redis_fallback = bool(self.config.get('redis_fallback', True))
+        self.redis_fallback_path = self.config.get('redis_fallback_path', './fallback_redis.json')
 
         # 任务队列配置
         _task_queue_defaults = {
             'task_queue_enabled': True,
             'task_queue_max_pending': 1000,
             'task_queue_history_limit': 500,
+            'task_queue_max_retries': 3,
+            'task_queue_retry_interval': 30,
+            'task_queue_retry_factor': 2,
         }
         _task_queue_needs_save = any(k not in self.config for k in _task_queue_defaults)
         for k, v in _task_queue_defaults.items():
@@ -669,6 +742,9 @@ class WXBotConfig:
         self.task_queue_enabled = bool(self.config.get('task_queue_enabled', True))
         self.task_queue_max_pending = max(10, int(self.config.get('task_queue_max_pending', 1000)))
         self.task_queue_history_limit = max(10, int(self.config.get('task_queue_history_limit', 500)))
+        self.task_queue_max_retries = max(0, int(self.config.get('task_queue_max_retries', 3)))
+        self.task_queue_retry_interval = max(1, int(self.config.get('task_queue_retry_interval', 30)))
+        self.task_queue_retry_factor = max(1, float(self.config.get('task_queue_retry_factor', 2)))
 
         log(message="全局配置更新完成")
 

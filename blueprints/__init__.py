@@ -14,7 +14,7 @@ def _lazy_bp(name, url_prefix=None):
 
 def build_blueprints():
     """惰性构建并返回全部 blueprint 列表。（web_server.create_app 调用）"""
-    from . import auth, config, prompt, bot, task, message, memory, contacts, system
+    from . import auth, config, prompt, bot, task, message, memory, contacts, system, deal
     return [
         auth.bp,
         config.bp,
@@ -25,4 +25,5 @@ def build_blueprints():
         memory.bp,
         contacts.bp,
         system.bp,
+        deal.bp,
     ]

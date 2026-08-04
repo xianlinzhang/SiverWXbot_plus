@@ -235,7 +235,7 @@ python web_server.py
 {
     "api_configs": [
         {"sdk": "OpenAI SDK", "key": "your-api-key", "url": "https://api.example.com/v1", "model": "gpt-5"},
-        {"sdk": "Dify", "key": "your-api-key", "url": "https://api.example.com/v1", "model": "workflow-id"}
+        {"sdk": "Dify", "key": "app-xxx（该 app 的密钥，即 App Key）", "url": "https://api.example.com/v1", "model": "workflow-id", "app_type": "workflow", "workflow_input_key": "msgs=$message,prompt=$prompt", "workflow_output_key": "text"}
     ],
     "api_index": 0,
     "admin": "文件传输助手",
@@ -334,6 +334,9 @@ python web_server.py
     "moments_like_max": 120,
     "random_moments_switch": false,
     "random_moments_list": [],
+    "moments_wait_mouse_idle_switch": true,
+    "moments_mouse_idle_seconds": 2,
+    "moments_mouse_max_wait_seconds": 60,
     "everyday_start_stop_bot_switch": false,
     "everyday_start_bot_time": "08:00",
     "everyday_stop_bot_time": "23:00",
@@ -370,7 +373,7 @@ python web_server.py
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `api_configs` | array | — | AI 接口配置列表，每项含 `sdk`/`key`/`url`/`model` |
+| `api_configs` | array | — | AI 接口配置列表，每项含 `sdk`/`key`/`url`/`model`；SDK=Dify 时额外含 `app_type`(chat/workflow)、`workflow_input_key`(入参映射，支持多键键值对如 `msgs=$message,prompt=$prompt`；占位符：`$message`=用户消息、`$prompt`=提示词、`$model`=模型名、`$user_key`=会话身份、`$history`=历史消息、`$time`/`$date`=当前时间/日期)、`workflow_output_key`；Dify 的 `key` 即该 app 的密钥(`app-xxx`) |
 | `api_index` | integer | `0` | 当前使用的接口索引（0-based） |
 | `admin` | string | `"文件传输助手"` | 管理员昵称，可发送管理命令 |
 | `AllListen_switch` | boolean | `false` | `false`=白名单模式，`true`=黑名单（全局）模式 |
@@ -420,6 +423,23 @@ python web_server.py
 | `moments_like_max` | integer | `120` | 随机点赞最大间隔（分钟，≥min） |
 | `random_moments_switch` | boolean | `false` | 是否开启随机定时朋友圈 |
 | `random_moments_list` | array | `[]` | 随机定时朋友圈任务列表 |
+| `moments_wait_mouse_idle_switch` | boolean | `true` | 发布朋友圈前是否等待鼠标空闲（避免与真人鼠标操作争抢） |
+| `moments_mouse_idle_seconds` | float | `2` | 鼠标需持续空闲秒数才执行发布（0.5~60） |
+| `moments_mouse_max_wait_seconds` | float | `60` | 最多等待鼠标空闲秒数，超时放弃本次发布（1~600） |
+| `deal_queue_consumer_switch` | boolean | `false` | 是否开启同城信息（顺风车/招聘）Redis 队列消费 |
+| `deal_queue_redis_host` | string | `"122.51.49.63"` | 远程同城信息队列 Redis 主机 |
+| `deal_queue_redis_port` | integer | `6379` | 远程同城信息队列 Redis 端口 |
+| `deal_queue_redis_db` | integer | `0` | 远程同城信息队列 Redis 库号 |
+| `deal_queue_redis_password` | string | `""` | 远程同城信息队列 Redis 密码 |
+| `deal_queue_poll_interval` | integer | `5` | 消费轮询间隔（秒，2~600） |
+| `deal_queue_privacy` | string | `"public"` | 发布朋友圈可见范围（public/friends_only/tagged/friends_except） |
+| `deal_queue_moments_prefix` | string | `""` | 发布朋友圈文案前缀（如 `#同城信息#`） |
+| `deal_queue_moments_max_len` | integer | `2000` | 文案截断长度（100~2000） |
+| `deal_queue_pending_max` | integer | `500` | 待发布池上限（1~10000），达到后暂停拉取 |
+| `deal_queue_auto_approve_switch` | boolean | `false` | 是否开启自动审核发布（纯放行，不经过滤） |
+| `deal_queue_auto_approve_delay` | integer | `60` | 入池后自动发布延迟（秒，0~86400） |
+| `deal_queue_publish_interval_min` | integer | `300` | 自动发布间隔下限（秒，1~86400） |
+| `deal_queue_publish_interval_max` | integer | `600` | 自动发布间隔上限（秒，自动不小于下限） |
 | `everyday_start_stop_bot_switch` | boolean | `false` | 是否开启每日定时启停机器人 |
 | `everyday_start_bot_time` | string | `"08:00"` | 每日自动启动时间（格式 `HH:MM`） |
 | `everyday_stop_bot_time` | string | `"23:00"` | 每日自动停止时间（格式 `HH:MM`） |
@@ -441,6 +461,8 @@ python web_server.py
 | `chat_max_round_reset_days` | integer | `0` | 回复计数重置周期，`0`=不自动重置 |
 | `chat_max_round_reply` | string | `""` | 超出回复次数后的固定提示语；空则静默 |
 | `chat_max_round_reply_once` | boolean | `false` | 超限提示语是否对同一用户只发送一次 |
+| `chat_reply_confirm_switch` | boolean | `false` | 私聊回复前先发送确认提示，等对方确认后再调用 AI 回复 |
+| `chat_reply_confirm_wait_timeout` | integer | `300` | 确认等待超时时间（秒，1~3600），超时放弃本次回复 |
 | `chat_split_reply_switch` | boolean | `false` | 是否开启私聊拆分多条回复 |
 | `chat_split_max_chars` | integer | `100` | 私聊拆分回复单条最大字数 |
 | `chat_split_max_count` | integer | `4` | 私聊拆分回复最多条数 |
