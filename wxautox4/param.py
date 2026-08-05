@@ -51,8 +51,8 @@ class WxParam:
     ENABLE_HUMANIZATION: bool = True
 
     # 鼠标移动时间范围（秒）
-    MOUSE_MOVE_MIN: float = 0.2
-    MOUSE_MOVE_MAX: float = 0.8
+    MOUSE_MOVE_MIN: float = 0.08
+    MOUSE_MOVE_MAX: float = 0.25
 
     # 点击位置最大随机偏移量（像素）
     CLICK_OFFSET_MAX: int = 15

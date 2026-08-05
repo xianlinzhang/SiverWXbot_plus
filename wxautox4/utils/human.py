@@ -11,6 +11,7 @@ import win32api
 import win32con
 from typing import Optional, Union, Tuple, List
 from wxautox4 import uia
+from wxautox4.param import WxParam
 
 
 def human_sleep(min_sec: float, max_sec: float) -> float:
@@ -105,22 +106,27 @@ def _bezier_curve(start: Tuple[int, int], end: Tuple[int, int],
     return points
 
 
-def human_move_to(x: int, y: int, min_duration: float = 0.2, 
-                  max_duration: float = 0.8) -> float:
+def human_move_to(x: int, y: int, min_duration: float = None,
+                  max_duration: float = None) -> float:
     """
     沿贝塞尔曲线平滑移动鼠标到目标位置
-    
+
     模拟人类自然的鼠标移动轨迹，包含轻微抖动和随机速度变化。
-    
+
     Args:
         x: 目标位置的横坐标
         y: 目标位置的纵坐标
-        min_duration: 最小移动时间（秒）
-        max_duration: 最大移动时间（秒）
-        
+        min_duration: 最小移动时间（秒），默认取 WxParam.MOUSE_MOVE_MIN
+        max_duration: 最大移动时间（秒），默认取 WxParam.MOUSE_MOVE_MAX
+
     Returns:
         float: 实际移动耗时（秒）
     """
+    if min_duration is None:
+        min_duration = WxParam.MOUSE_MOVE_MIN
+    if max_duration is None:
+        max_duration = WxParam.MOUSE_MOVE_MAX
+
     start_pos = _get_cursor_pos()
     
     if start_pos == (x, y):
