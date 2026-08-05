@@ -405,6 +405,39 @@ class Moment:
         else:
             return None
 
+    def EnsureMomentsWindow(self):
+        """确保朋友圈窗口存在且可见、可点击。
+
+        窗口不存在则切换到朋友圈并等待弹出；窗口已存在则检查可见性，
+        最小化/隐藏时恢复并置前（不可见窗口无法接收鼠标点击）。
+
+        Returns:
+            uia.WindowControl or None: 可用（可见）的朋友圈窗口控件，失败返回None
+        """
+        moments_window = self.GetMomentsWindow()
+        if moments_window is None:
+            try:
+                self._wx.SwitchToMoments()
+                if WxParam.ENABLE_HUMANIZATION:
+                    human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
+                else:
+                    time.sleep(0.5)
+            except Exception:
+                wxlog.debug('切换到朋友圈页面失败')
+            moments_window = self.GetMomentsWindow()
+            if moments_window is None:
+                return None
+
+        # 窗口已存在：确保可见、非最小化、置前
+        try:
+            if moments_window.IsTopLevel():
+                if moments_window.IsMinimize():
+                    moments_window.Restore()
+                moments_window.SwitchToThisWindow()
+        except Exception:
+            wxlog.debug('激活朋友圈窗口失败')
+        return moments_window
+
     def GetMoments(self, refresh: bool = False) -> List[MomentItem]:
         """获取朋友圈动态列表。
 
@@ -517,13 +550,10 @@ class Moment:
             WxResponse: 发布结果
         """
         try:
-            self._wx.SwitchToMoments()
-            if WxParam.ENABLE_HUMANIZATION:
-                human_sleep(WxParam.CLICK_DELAY_MIN, WxParam.CLICK_DELAY_MAX)
-            else:
-                time.sleep(0.5)
-            
-            MomentsWindow = self.GetMomentsWindow()
+            # 窗口不存在则切换，已存在则激活确保可见可点击，避免多余的切换操作
+            MomentsWindow = self.EnsureMomentsWindow()
+            if not MomentsWindow:
+                return WxResponse.failure('未找到朋友圈窗口')
 
             # 朋友圈窗口工具条
             MomentsToolBar = MomentsWindow.ToolBarControl(ClassName= self.WindowMomentsControlToolBarClassName)
